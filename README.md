@@ -17,7 +17,11 @@
 
 [中文说明](README_ZH.md)
 
-A menu bar application using mpv as **DLNA Media Renderer**. You can push videos, pictures or musics from your mobile phone to your computer.
+A menu bar application using mpv as **DLNA Media Renderer**. You can push videos,
+pictures or music from your mobile phone to your computer.
+
+This fork additionally supports **AirPlay screen mirroring and audio on
+Windows** while keeping the original Macast menu and settings interface.
 
 
 ## Installation
@@ -58,13 +62,50 @@ After opening this app, a small icon will appear in the **menubar** / **taskbar*
   For more information, see: [#how-to-use-third-party-player-plug-in](https://github.com/xfangfang/Macast/wiki/FAQ#how-to-use-third-party-player-plug-in)
   2. You can modify the shortcut keys or configuration of the default mpv player by yourself, see: [#how-to-set-personal-configurations-to-mpv](https://github.com/xfangfang/Macast/wiki/FAQ#how-to-set-personal-configurations-to-mpv)
   3. This fork can manage an AirPlay-Windows receiver process for AirPlay screen
-  mirroring and audio on Windows. Its own control interface stays hidden until
-  a mirror session needs a video surface. See [docs/AirPlay.md](docs/AirPlay.md).
+  mirroring and audio on Windows.
 
 - **For developer**  
 You can use a few lines of code to add support for other players like IINA and PotPlayer or even add additional features, like downloading media files while playing videos.  
 Tutorials and examples are shown in: [Macast/wiki/Custom-Renderer](https://github.com/xfangfang/Macast/wiki/Custom-Renderer).  
 Fell free to submit a pull request to [Macast-plugins](https://github.com/xfangfang/Macast-plugins).  
+
+## Windows AirPlay Mirroring
+
+This fork extends Macast with an independent
+[AirPlay-Windows](https://github.com/moieric11/AirPlay-Windows) receiver:
+
+- iPhone/iPad screen mirroring with H.264 or HEVC and AirPlay audio.
+- DLNA and AirPlay can run at the same time.
+- The original Macast tray/menu and web settings remain the control interface.
+- AirPlay-Windows starts hidden, so it does not open a second management UI.
+- During mirroring, a standard Windows video window is shown with native
+  minimize, maximize, and close controls.
+- The video window follows the current portrait or landscape aspect ratio.
+  Edge dragging is ratio-constrained and remains usable for resizing.
+- The AirPlay receiver name follows Macast's normal friendly-name setting.
+- Macast stops the AirPlay process when it exits. Windows Job Objects are used
+  to avoid orphaned receiver processes after an abnormal Macast exit.
+
+The first launch may require allowing `airplay-windows-macast.exe` through
+Windows Firewall for the local network. See [docs/AirPlay.md](docs/AirPlay.md)
+for first-run setup, configuration, known limits, and packaging details.
+
+### Build the Windows AirPlay backend
+
+The AirPlay backend is based on a pinned AirPlay-Windows source release and a
+small Macast compatibility patch:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/prepare_airplay_windows.ps1
+powershell -ExecutionPolicy Bypass -File tools/build_airplay_windows_macast.ps1
+```
+
+The first backend build installs FFmpeg, OpenSSL, and SDL2 through vcpkg and can
+take several minutes. It produces a self-contained
+`bin\AirPlay-Windows\airplay-windows-macast.exe`.
+
+Known limits: one active AirPlay sender at a time, no DRM-protected video
+playback, and Windows 10/11 x64 is the supported AirPlay host platform.
 
 
 ## FAQ

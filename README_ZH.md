@@ -14,6 +14,9 @@
 
 Macast是一个跨平台的 **菜单栏\状态栏** 应用，用户可以使用电脑接收发送自手机的视频、图片和音乐，支持主流视频音乐软件和其他任何符合DLNA协议的投屏软件。
 
+当前分支额外支持 **Windows AirPlay 屏幕镜像与音频**，同时保留 Macast
+原有的菜单栏、托盘和设置页面。
+
 
 😂 **请尽量使用英语在Github交流，如果喜欢的话可以点个star关注后续更多协议支持的更新**
 
@@ -63,6 +66,7 @@ Macast是一个跨平台的 **菜单栏\状态栏** 应用，用户可以使用�
   1. 通过手动加载 [Macast插件](https://gitee.com/xfangfang/Macast-plugins), Macast可以支持调用其他播放器，如：IINA、PotPlayer等等，或适配国内各家私有的DLNA协议. 
   2. 在应用内点击高级设置，可以直接在内置的插件商店中快速下载插件（使用github仓库地址，如果网络条件不好刷新不出来，那么还是通过手动加载的方式下载吧）
   3. 支持修改默认播放器的快捷键或其他参数，见：[#how-to-set-personal-configurations-to-mpv](https://github.com/xfangfang/Macast/wiki/FAQ#how-to-set-personal-configurations-to-mpv)
+  4. Windows 下可以在同一份 Macast 中同时使用 DLNA 和 AirPlay 屏幕镜像。
 
 - **程序员**  
   1. 可以依照教程完成自己的脚本，快速地适配到你喜欢的播放器，或者增加一些新的功能插件，比如：边下边看，自动复制视频链接等等。教程和一些示例代码在：[Macast/wiki/Custom-Renderer](https://github.com/xfangfang/Macast/wiki/Custom-Renderer)  
@@ -88,7 +92,39 @@ Macast是一个跨平台的 **菜单栏\状态栏** 应用，用户可以使用�
 
 AirPlay 屏幕镜像与音频接收进程的部署、配置和验证方式见
 [docs/AirPlay.md](docs/AirPlay.md)。AirPlay-Windows 自身的控制界面默认不显示，
-仅在检测到镜像会话时显示无边框镜像画面。
+仅在检测到镜像会话时显示带标准 Windows 边框的镜像画面。
+
+## Windows AirPlay 屏幕镜像
+
+当前分支基于
+[AirPlay-Windows](https://github.com/moieric11/AirPlay-Windows)
+增加独立 AirPlay 接收进程管理：
+
+- 支持 iPhone/iPad H.264、HEVC 屏幕镜像和 AirPlay 音频。
+- DLNA 与 AirPlay 可以同时运行。
+- 控制界面仍然是原版 Macast，不使用 AirPlay-Windows 的首页和导航。
+- AirPlay-Windows 在后台隐藏启动，不再弹出自己的管理窗口。
+- 开始镜像时显示标准 Windows 视频窗口，带原生最小化、最大化和关闭按钮。
+- 镜像窗口始终匹配当前视频比例；拖动上下边和左右边时会按实际拖动方向缩放。
+- AirPlay 设备名称沿用 Macast 原版的 friendly name。
+- Macast 退出时自动停止 AirPlay 接收进程，异常退出时由 Job Object 清理。
+
+首次使用时，可能需要允许 `airplay-windows-macast.exe` 通过 Windows
+防火墙访问本地网络。详细设置和已知限制见 [docs/AirPlay.md](docs/AirPlay.md)。
+
+### 构建 Windows AirPlay 后端
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/prepare_airplay_windows.ps1
+powershell -ExecutionPolicy Bypass -File tools/build_airplay_windows_macast.ps1
+```
+
+首次构建会通过 vcpkg 安装 FFmpeg、OpenSSL 和 SDL2，可能需要较长时间。
+构建结果是一个自包含的
+`bin\AirPlay-Windows\airplay-windows-macast.exe`。
+
+已知限制：同一时间仅支持一个 AirPlay 发送端；不支持 DRM 视频；AirPlay
+后端当前仅支持 Windows 10/11 x64。
 
 ## 出现问题的可能原因及解决办法（更详细内容见项目的wiki）
 

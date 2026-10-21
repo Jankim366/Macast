@@ -5,6 +5,8 @@ import re
 import sys
 import time
 import json
+import atexit
+import shlex
 import cherrypy
 import logging
 import threading
@@ -18,6 +20,7 @@ from .gui import App, MenuItem, Platform
 from .protocol import DLNAProtocol
 from .server import Service
 from .utils import RENDERER_DIR, PROTOCOL_DIR, Setting
+from .airplay import AirPlayProcessManager
 from macast_renderer.mpv import MPVRenderer
 
 logger = logging.getLogger("main")
@@ -161,6 +164,35 @@ class MacastPluginManager:
             open(init_file_path, 'a').close()
 
 
+def create_airplay_process_manager(status_callback=None):
+    configured_path = Setting.get(SettingProperty.AirPlayExecutable, '')
+    auto_restart = bool(Setting.get(SettingProperty.AirPlayAutoRestart, 1))
+    extra_arguments = Setting.get(SettingProperty.AirPlayExtraArguments, [])
+    if not extra_arguments:
+        extra_arguments = []
+    if isinstance(extra_arguments, str):
+        extra_arguments = shlex.split(
+            extra_arguments, posix=sys.platform != 'win32')
+    arguments = ['--log', '--macast-windowed']
+    arguments.extend(str(argument) for argument in extra_arguments)
+    hide_windows_ui = bool(
+        Setting.get(SettingProperty.AirPlayHideWindowsUI, 1))
+    app_data = os.environ.get('APPDATA', SETTING_DIR)
+    return AirPlayProcessManager(
+        executable=configured_path,
+        arguments=arguments,
+        working_dir=os.path.join(SETTING_DIR, 'AirPlay-Windows'),
+        settings_path=os.path.join(
+            app_data, 'AirPlay-Windows', 'settings.ini'),
+        log_path=os.path.join(SETTING_DIR, 'airplay-windows.log'),
+        receiver_name=Setting.get_friendly_name(),
+        auto_restart=auto_restart,
+        hide_until_mirror=hide_windows_ui,
+        require_macast_window=True,
+        status_callback=status_callback,
+        env=Setting.get_system_env())
+
+
 class Macast(App):
     if sys.platform == 'win32':
         ICON_MAP = ['assets/icon.ico',
@@ -171,7 +203,8 @@ class Macast(App):
                     'assets/menu_light.png',
                     'assets/menu_dark.png']
 
-    def __init__(self, renderer, protocol, lang=gettext.gettext):
+    def __init__(self, renderer, protocol, lang=gettext.gettext,
+                 airplay_manager=None):
         global _
         _ = lang
         # menu items
@@ -189,6 +222,18 @@ class Macast(App):
         self.renderer_menuitem = None
         self.protocol_menuitem = None
         self.advanced_menuitem = None
+        self.airplay_menuitem = None
+        self.airplay_status_menuitem = None
+        self.airplay_toggle_menuitem = None
+        self.airplay_restart_menuitem = None
+        self.airplay_show_menuitem = None
+
+        if airplay_manager is None:
+            airplay_manager = create_airplay_process_manager(
+                self.on_airplay_status_changed)
+        else:
+            airplay_manager.status_callback = self.on_airplay_status_changed
+        self.airplay_manager = airplay_manager
 
         self.plugin_manager = MacastPluginManager(
             MacastPlugin(None, format_class_name(renderer), renderer, 'darwin,win32,linux'),
@@ -224,6 +269,11 @@ class Macast(App):
         cherrypy.engine.subscribe('ssdp_update_ip', self.update_service_ip)
         cherrypy.engine.subscribe('app_notify', self.notification)
         self.start_cast()
+        atexit.register(self.airplay_manager.stop)
+        if Setting.get(
+                SettingProperty.AirPlayEnabled,
+                1 if sys.platform == 'win32' else 0):
+            self.start_airplay(auto=True)
         logger.debug("Macast APP started")
 
     def build_app_menu(self):
@@ -307,21 +357,75 @@ class Macast(App):
                                           lambda _: self.open_browser('http://127.0.0.1:{}'.format(Setting.get_port())))
         self.check_update_menuitem = MenuItem(_("Check For Updates"), self.on_check_click)
         self.about_menuitem = MenuItem(_("Help"), self.on_about_click)
+        self.airplay_menuitem = MenuItem(
+            _("AirPlay Screen Mirroring"),
+            children=self.build_airplay_menu())
 
         self.menubar_icon_menuitem.items()[self.setting_menubar_icon].checked = True
         player_settings = self.service.renderer.renderer_setting.build_menu()
         if len(player_settings) > 0:
             player_settings.append(None)
+        airplay_settings = [self.airplay_menuitem, None]
 
         return [self.version_menuitem, self.ip_menuitem] + \
                renderer_select + \
                protocol_select + \
                [None] + \
                player_settings + \
+               airplay_settings + \
                [self.menubar_icon_menuitem, self.auto_check_update_menuitem,
                 self.open_config_menuitem, self.advanced_menuitem] + \
                platform_options + \
                [None, self.check_update_menuitem, self.about_menuitem]
+
+    def build_airplay_menu(self):
+        self.airplay_status_menuitem = MenuItem(
+            self.get_airplay_status_text(),
+            enabled=False)
+        self.airplay_toggle_menuitem = MenuItem(
+            self.get_airplay_toggle_text(),
+            self.on_airplay_toggle_click)
+        self.airplay_restart_menuitem = MenuItem(
+            _("Restart AirPlay"),
+            self.on_airplay_restart_click,
+            enabled=self.airplay_manager.is_running())
+        self.airplay_show_menuitem = MenuItem(
+            _("Show Mirror Window"),
+            self.on_airplay_show_click,
+            enabled=(self.airplay_manager.is_running()
+                     and sys.platform == 'win32'))
+        return [
+            self.airplay_status_menuitem,
+            self.airplay_toggle_menuitem,
+            self.airplay_restart_menuitem,
+            self.airplay_show_menuitem,
+        ]
+
+    def get_airplay_status_text(self):
+        state_labels = {
+            AirPlayProcessManager.STARTING: _("Starting"),
+            AirPlayProcessManager.RUNNING: _("Running"),
+            AirPlayProcessManager.RESTARTING: _("Restarting"),
+            AirPlayProcessManager.STOPPED: _("Stopped"),
+            AirPlayProcessManager.MISSING: _("Executable not found"),
+            AirPlayProcessManager.ERROR: _("Error"),
+        }
+        state = self.airplay_manager.state
+        return "{}: {}".format(
+            _("AirPlay"),
+            state_labels.get(state, state))
+
+    def get_airplay_toggle_text(self):
+        if self.is_airplay_active():
+            return _("Stop AirPlay")
+        return _("Start AirPlay")
+
+    def is_airplay_active(self):
+        return self.airplay_manager.state in [
+            AirPlayProcessManager.STARTING,
+            AirPlayProcessManager.RUNNING,
+            AirPlayProcessManager.RESTARTING,
+        ]
 
     def init_setting(self):
         self.setting_start_at_login = Setting.get(SettingProperty.StartAtLogin, 0)
@@ -370,6 +474,35 @@ class Macast(App):
         else:
             self.toggle_menuitem.text = _('Start Cast')
         self.update_menu()
+
+    def on_airplay_status_changed(self, state, message):
+        logger.info("AirPlay status: %s (%s)", state, message)
+        if self.airplay_status_menuitem is None:
+            return
+        running = state in [
+            AirPlayProcessManager.STARTING,
+            AirPlayProcessManager.RUNNING,
+            AirPlayProcessManager.RESTARTING,
+        ]
+        self.airplay_status_menuitem.text = self.get_airplay_status_text()
+        self.airplay_toggle_menuitem.text = self.get_airplay_toggle_text()
+        self.airplay_restart_menuitem.enabled = running
+        self.airplay_show_menuitem.enabled = running and sys.platform == 'win32'
+        self.update_menu()
+
+    def start_airplay(self, auto=False):
+        if self.airplay_manager.start():
+            Setting.set(SettingProperty.AirPlayEnabled, 1)
+            return True
+        if not auto:
+            self.notification(
+                _("AirPlay"),
+                self.airplay_manager.message)
+        return False
+
+    def stop_airplay(self):
+        self.airplay_manager.stop()
+        Setting.set(SettingProperty.AirPlayEnabled, 0)
 
     def service_start(self):
         """This function is called every time the DLNA service is started.
@@ -487,6 +620,26 @@ class Macast(App):
         else:
             self.start_cast()
 
+    def on_airplay_toggle_click(self, item):
+        if self.is_airplay_active():
+            self.stop_airplay()
+        else:
+            self.start_airplay()
+
+    def on_airplay_restart_click(self, item):
+        if self.airplay_manager.restart():
+            Setting.set(SettingProperty.AirPlayEnabled, 1)
+        else:
+            self.notification(
+                _("AirPlay"),
+                self.airplay_manager.message)
+
+    def on_airplay_show_click(self, item):
+        if not self.airplay_manager.show_window():
+            self.notification(
+                _("AirPlay"),
+                _("The AirPlay receiver window cannot be shown here."))
+
     def on_menubar_icon_change_click(self, item):
         for i in self.menubar_icon_menuitem.items():
             i.checked = False
@@ -499,15 +652,18 @@ class Macast(App):
     def quit(self, item):
         if Setting.is_service_running():
             self.stop_cast()
+        self.airplay_manager.stop()
+        self.airplay_manager.status_callback = None
         super(Macast, self).quit(item)
 
 
-def gui(renderer=None, protocol=None, lang=gettext.gettext):
+def gui(renderer=None, protocol=None, lang=gettext.gettext,
+        airplay_manager=None):
     if renderer is None:
         renderer = MPVRenderer(lang, Setting.mpv_default_path)
     if protocol is None:
         protocol = DLNAProtocol()
-    Macast(renderer, protocol, lang).start()
+    Macast(renderer, protocol, lang, airplay_manager).start()
 
 
 def cli(renderer=None, protocol=None):
@@ -515,4 +671,12 @@ def cli(renderer=None, protocol=None):
         renderer = MPVRenderer(path=Setting.mpv_default_path)
     if protocol is None:
         protocol = DLNAProtocol()
-    Service(renderer, protocol).run()
+    airplay_manager = create_airplay_process_manager()
+    if Setting.get(
+            SettingProperty.AirPlayEnabled,
+            1 if sys.platform == 'win32' else 0):
+        airplay_manager.start()
+    try:
+        Service(renderer, protocol).run()
+    finally:
+        airplay_manager.stop()

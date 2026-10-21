@@ -84,7 +84,11 @@ Macast是一个跨平台的 **菜单栏\状态栏** 应用，用户可以使用�
 - [ ] 改进目前的播放器控制页面
 - [x] 增加插件商店
 - [x] 添加bilibili弹幕投屏
-- [ ] 支持airplay
+- [x] 管理独立的 AirPlay-Windows 镜像接收进程
+
+AirPlay 屏幕镜像与音频接收进程的部署、配置和验证方式见
+[docs/AirPlay.md](docs/AirPlay.md)。AirPlay-Windows 自身的控制界面默认不显示，
+仅在检测到镜像会话时显示无边框镜像画面。
 
 ## 出现问题的可能原因及解决办法（更详细内容见项目的wiki）
 

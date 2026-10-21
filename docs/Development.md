@@ -52,7 +52,9 @@ python Macast.py
 
 ```powershell
 pip install pyinstaller
-pyinstaller --noconfirm -F -w --additional-hooks-dir=. --add-data=".version;." --add-data="macast/xml/*;macast/xml"  --add-data="i18n/zh_CN/LC_MESSAGES/*.mo;i18n/zh_CN/LC_MESSAGES" --add-data="assets/*;assets" --add-binary="bin/mpv.exe;bin" --icon=assets/icon.ico Macast.py
+powershell -ExecutionPolicy Bypass -File tools/prepare_airplay_windows.ps1
+powershell -ExecutionPolicy Bypass -File tools/build_airplay_windows_macast.ps1
+pyinstaller --noconfirm -F -w --additional-hooks-dir=. --add-data=".version;." --add-data="macast/xml/*;macast/xml"  --add-data="i18n/zh_CN/LC_MESSAGES/*.mo;i18n/zh_CN/LC_MESSAGES" --add-data="assets/*;assets" --add-data="bin/AirPlay-Windows;bin/AirPlay-Windows" --add-binary="bin/mpv.exe;bin" --icon=assets/icon.ico Macast.py
 ```
 
 

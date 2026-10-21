@@ -176,3 +176,45 @@ msgstr "检查更新"
 
 msgid "New Update {}"
 msgstr "有新版本 {}"
+
+msgid "AirPlay Receiver"
+msgstr "AirPlay 接收器"
+
+msgid "AirPlay Screen Mirroring"
+msgstr "AirPlay 屏幕镜像"
+
+msgid "AirPlay"
+msgstr "AirPlay"
+
+msgid "Starting"
+msgstr "启动中"
+
+msgid "Running"
+msgstr "运行中"
+
+msgid "Restarting"
+msgstr "正在重启"
+
+msgid "Stopped"
+msgstr "已停止"
+
+msgid "Executable not found"
+msgstr "未找到接收器程序"
+
+msgid "Start AirPlay"
+msgstr "启动 AirPlay"
+
+msgid "Stop AirPlay"
+msgstr "停止 AirPlay"
+
+msgid "Restart AirPlay"
+msgstr "重启 AirPlay"
+
+msgid "Show AirPlay Window"
+msgstr "显示 AirPlay 窗口"
+
+msgid "Show Mirror Window"
+msgstr "显示镜像窗口"
+
+msgid "The AirPlay receiver window cannot be shown here."
+msgstr "当前平台无法从 Macast 显示 AirPlay 接收器窗口。"

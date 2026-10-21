@@ -57,6 +57,9 @@ After opening this app, a small icon will appear in the **menubar** / **taskbar*
   1. By loading the [Macast-plugins](https://github.com/xfangfang/Macast-plugins), Macast can support third-party players like IINA and PotPlayer.  
   For more information, see: [#how-to-use-third-party-player-plug-in](https://github.com/xfangfang/Macast/wiki/FAQ#how-to-use-third-party-player-plug-in)
   2. You can modify the shortcut keys or configuration of the default mpv player by yourself, see: [#how-to-set-personal-configurations-to-mpv](https://github.com/xfangfang/Macast/wiki/FAQ#how-to-set-personal-configurations-to-mpv)
+  3. This fork can manage an AirPlay-Windows receiver process for AirPlay screen
+  mirroring and audio on Windows. Its own control interface stays hidden until
+  a mirror session needs a video surface. See [docs/AirPlay.md](docs/AirPlay.md).
 
 - **For developer**  
 You can use a few lines of code to add support for other players like IINA and PotPlayer or even add additional features, like downloading media files while playing videos.  

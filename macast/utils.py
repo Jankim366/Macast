@@ -39,6 +39,11 @@ class SettingProperty(Enum):
     Macast_Protocol = 7
     Blocked_Interfaces = 8
     Additional_Interfaces = 9
+    AirPlayEnabled = 10
+    AirPlayExecutable = 11
+    AirPlayAutoRestart = 12
+    AirPlayExtraArguments = 13
+    AirPlayHideWindowsUI = 14
 
 
 class Setting:

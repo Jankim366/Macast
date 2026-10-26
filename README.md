@@ -86,6 +86,13 @@ This fork extends Macast with an independent
 - Macast's native AirPlay submenu shows the current title/artist/time and
   provides Previous, Play, Pause, Toggle Play/Pause, Next, Volume Up, Volume
   Down, and Toggle Mute.
+- Windows also shows a `Macast AirPlay` system media card with the current
+  title, artist, timeline, and working Previous/Pause-or-Play/Next controls.
+- DACP services are discovered through the native Windows `_dacp._tcp.local`
+  browser, including services registered after the AirPlay connection.
+- Audio logs its actual SDL/WASAPI endpoint. Remote-desktop and virtual
+  endpoints are avoided when a local speaker is available, and
+  `MACAST_AIRPLAY_AUDIO_DEVICE` can select an exact output device.
 - AirPlay metadata and reverse controls use the sender's DMAP/DACP services;
   lyrics, complete playlists, and next-track previews are normally unavailable.
 - Macast stops the AirPlay process when it exits. Windows Job Objects are used

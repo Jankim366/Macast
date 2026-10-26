@@ -109,6 +109,13 @@ AirPlay 屏幕镜像与音频接收进程的部署、配置和验证方式见
 - AirPlay 设备名称沿用 Macast 原版的 friendly name。
 - Macast 原生 AirPlay 子菜单会显示歌曲名、歌手和播放时间，并提供上一首、
   播放、暂停、播放/暂停切换、下一首、音量加、音量减和静音切换。
+- Windows 系统媒体卡片会显示 `Macast AirPlay`、歌曲名、歌手，以及可用的
+  上一首、暂停/播放和下一首按钮；不会再显示
+  `ms-resource:AppName` 的通用媒体播放器卡片。
+- AirPlay 音频会记录实际使用的 SDL/WASAPI 输出设备。若 Windows 默认输出
+  是 `ToDesk Virtual Audio`、`RemoteControl Virtual Audio` 或网易虚拟声卡，
+  接收器会优先切换到可用的本地扬声器；也可通过环境变量
+  `MACAST_AIRPLAY_AUDIO_DEVICE` 指定设备名称。
 - 元数据与反向控制使用发送端的 DMAP/DACP 服务；歌词、完整播放列表和下一首
   预览通常无法获取。
 - Macast 退出时自动停止 AirPlay 接收进程，异常退出时由 Job Object 清理。

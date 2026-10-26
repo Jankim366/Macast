@@ -388,6 +388,11 @@ class MPVRenderer(Renderer):
                     '--on-all-workspaces',
                     '--macos-app-activation-policy=accessory',
                 ]
+            elif sys.platform == 'win32':
+                # AirPlay publishes its own Windows media card. Keeping mpv
+                # out of SMTC prevents an idle renderer from leaving a stale
+                # "ms-resource:AppName / Media Player" entry beside it.
+                params.append('--input-media-keys=no')
 
             # set hardware
             hw = Setting.get(SettingProperty.PlayerHW,

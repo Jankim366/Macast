@@ -43,7 +43,20 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
   Toggle Play/Pause, Next, Volume Up, Volume Down, and Toggle Mute.
 - Macast sends reverse controls with the sender-provided `DACP-ID` and
   `Active-Remote` token. Commands are only enabled when the sender exposes a
-  usable DACP service.
+  usable DACP service. DACP discovery uses the native Windows service browser
+  (`_dacp._tcp.local`) instead of relying only on a one-shot service-name
+  resolve, so later service registration and port changes are picked up.
+- Windows SMTC is published from a dedicated STA thread. The card uses the
+  explicit `Jankim366.Macast.AirPlay` AppUserModelID, shows the current title,
+  artist and album, and exposes previous, play/pause and next controls only
+  when DACP is reachable.
+- On Windows, mpv media-key integration is disabled at launch so an idle DLNA
+  renderer cannot leave a stale generic `ms-resource:AppName` media card next
+  to the AirPlay card.
+- The audio sink logs the SDL driver and selected endpoint. Remote-desktop and
+  obviously virtual output endpoints are skipped when a local playback device
+  is available. Set `MACAST_AIRPLAY_AUDIO_DEVICE` to the exact endpoint name
+  when a machine needs an explicit override.
 - `Start Cast` controls the DLNA service. It does not stop the independent
   AirPlay receiver.
 - A normal AirPlay-Windows exit is not restarted. A non-zero exit is retried at
@@ -98,7 +111,7 @@ The script downloads AirPlay-Windows v0.4.1, verifies its SHA-256, and stages th
 complete runtime under `bin\AirPlay-Windows`.
 
 Build the Macast-compatible standard-frame binary from the pinned source and
-the patch in `tools/airplay-windows-macast.patch`:
+the patch in `tools/airplay-windows-macast-complete.patch`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/build_airplay_windows_macast.ps1
@@ -187,13 +200,23 @@ sufficient because AirPlay-Windows also loads SDL2 and FFmpeg DLLs.
 ## Verification checklist
 
 1. Run `python -m unittest discover -s tests -v`.
-2. Start Macast and open `Setting -> AirPlay Screen Mirroring`.
-3. Confirm the menu changes from `Starting` to `Running`.
-4. On an iPhone or iPad, open Screen Mirroring and select the configured
+2. Build the clean AirPlay backend with
+   `tools/build_airplay_windows_macast.ps1`.
+3. In that build tree, configure `-DBUILD_NETWORK_TESTS=ON` and run
+   `test-shutdown --dacp`, `test-audio-timing`, `test-audio-output` and
+   `test-media-session`.
+4. Start Macast and open `Setting -> AirPlay Screen Mirroring`.
+5. Confirm the menu changes from `Starting` to `Running`.
+6. On an iPhone or iPad, open Screen Mirroring and select the configured
    AirPlay-Windows receiver.
-5. Confirm mirrored video and its audio.
-6. Use `Restart AirPlay` and confirm the sender can reconnect.
-7. Quit Macast and confirm `airplay-windows.exe` no longer exists in Task
+7. Confirm mirrored video and audible output on the endpoint printed in
+   `airplay-windows.log`.
+8. Play audio in Apple Music and confirm the Macast submenu and Windows media
+   card show the same title. Verify previous, pause/resume and next against
+   the phone; confirm `control=1` in
+   `macast_airplay_state.ini`.
+9. Use `Restart AirPlay` and confirm the sender can reconnect.
+10. Quit Macast and confirm `airplay-windows.exe` no longer exists in Task
    Manager.
 
 ## Known limits and distribution risk

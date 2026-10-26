@@ -1,0 +1,892 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index efb9bb1..285320b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -332,6 +332,7 @@ add_executable(airplay-windows
+     ${HLS_PLAYER_SRC}
+     src/video/video_renderer.cpp
+     src/platform/firewall.cpp
++    src/platform/macast_bridge.cpp
+     src/video/cover_art.cpp
+     src/audio/audio_receiver.cpp
+     src/audio/aac_decoder.cpp
+@@ -339,6 +340,11 @@ add_executable(airplay-windows
+     src/usb/pair_record.cpp
+     src/usb/usb_supervisor.cpp
+ )
++if(WIN32)
++    target_sources(airplay-windows PRIVATE
++        src/airplay-windows.rc
++        src/platform/windows_media_session.cpp)
++endif()
+ 
+ target_include_directories(airplay-windows PRIVATE src)
+ target_link_libraries(airplay-windows PRIVATE OpenSSL::Crypto ${FFMPEG_TARGETS} ${SDL2_TARGET} ${SDL2_TTF_TARGET} imgui)
+@@ -418,7 +424,7 @@ if(WIN32)
+     # VideoRenderer window.
+     target_link_libraries(airplay-windows PRIVATE
+         ws2_32 iphlpapi dnsapi dwmapi d3d11
+-        setupapi shell32 ole32 oleaut32)   # USB, Lockdown lookup and firewall COM API
++        setupapi shell32 shlwapi ole32 oleaut32 propsys windowsapp)
+ 
+     # Released as a GUI app so no empty console window pops up when
+     # launched from File Explorer. main() stays the entry point — the
+@@ -457,16 +463,6 @@ endif()
+ # system GStreamer install put them and let gst_init() find them via
+ # its registered plugin path — practically: as long as the user has
+ # GStreamer's bin/ on PATH the plugins resolve at startup.
+-if(WIN32)
+-    add_custom_command(TARGET airplay-windows POST_BUILD
+-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+-            $<TARGET_RUNTIME_DLLS:airplay-windows>
+-            $<TARGET_FILE_DIR:airplay-windows>
+-        COMMAND_EXPAND_LISTS
+-        COMMENT "Deploying linked runtime DLLs next to airplay-windows.exe"
+-        VERBATIM)
+-endif()
+-
+ # ---- Avahi (optional, Linux only — dev-mode mDNS) ----------------------------
+ # Lets the receiver auto-appear on iOS when launched from a Linux host for
+ # hacking / testing. Windows uses the native dnsapi above.
+@@ -514,6 +510,25 @@ if(BUILD_NETWORK_TESTS)
+         find_package(Threads REQUIRED)
+         target_link_libraries(test-shutdown PRIVATE Threads::Threads)
+     endif()
++    if(WIN32)
++        add_executable(test-audio-output
++            tools/test_audio_output.cpp
++            src/audio/audio_output.cpp
++            src/log.cpp)
++        target_include_directories(test-audio-output PRIVATE src)
++        target_link_libraries(test-audio-output PRIVATE
++            ${SDL2_TARGET} shell32 ole32 oleaut32)
++        add_test(NAME audio-output COMMAND test-audio-output)
++
++        add_executable(test-media-session
++            tools/test_media_session.cpp
++            src/platform/windows_media_session.cpp
++            src/log.cpp)
++        target_include_directories(test-media-session PRIVATE src)
++        target_link_libraries(test-media-session PRIVATE
++            shell32 shlwapi ole32 oleaut32 propsys windowsapp)
++        add_test(NAME media-session COMMAND test-media-session)
++    endif()
+     enable_testing()
+     add_test(NAME firewall COMMAND test-firewall)
+     add_test(NAME settings COMMAND test-settings)
+diff --git a/src/airplay/dacp_remote.cpp b/src/airplay/dacp_remote.cpp
+index 65538f1..3a2eb44 100644
+--- a/src/airplay/dacp_remote.cpp
++++ b/src/airplay/dacp_remote.cpp
+@@ -2,6 +2,7 @@
+ #include "net/socket.h"
+ #include "log.h"
+ #include <algorithm>
++#include <cctype>
+ #include <chrono>
+ #include <condition_variable>
+ #include <sstream>
+@@ -19,12 +20,25 @@ bool hex_id(const std::string& s) {
+     });
+ }
+ bool remote_token(const std::string& s) {
+-    return !s.empty() && s.size() <= 20 && std::all_of(s.begin(), s.end(), [](unsigned char c) {
+-        return c >= '0' && c <= '9';
++    return !s.empty() && s.size() <= 64 && std::all_of(s.begin(), s.end(), [](unsigned char c) {
++        return std::isalnum(c) || c == '-' || c == '_';
+     });
+ }
+ #if defined(_WIN32)
+-bool send_request(const std::string& ip, uint16_t port, const std::string& token, const std::string& path, bool post) {
++std::string wide_to_utf8(const wchar_t* value) {
++    if (!value || !*value) return {};
++    const int size = WideCharToMultiByte(
++        CP_UTF8, 0, value, -1, nullptr, 0, nullptr, nullptr);
++    if (size <= 1) return {};
++    std::string out(static_cast<std::size_t>(size - 1), '\0');
++    WideCharToMultiByte(
++        CP_UTF8, 0, value, -1, out.data(), size, nullptr, nullptr);
++    return out;
++}
++
++bool send_request(const std::string& ip, uint16_t port,
++                  const std::string& token, const std::string& host_name,
++                  const std::string& path, bool post) {
+     addrinfo hints{}, *addresses = nullptr;
+     hints.ai_socktype = SOCK_STREAM;
+     hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
+@@ -63,9 +77,16 @@ bool send_request(const std::string& ip, uint16_t port, const std::string& token
+     DWORD timeout = 500;
+     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+-    const std::string host = ip.find(':') == std::string::npos ? ip : "[" + ip + "]";
+-    const std::string wire = std::string(post ? "POST" : "GET") + " /ctrl-int/1/" + path + " HTTP/1.1\r\nHost: " +
+-        host + ":" + port_string + "\r\nActive-Remote: " + token + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
++
++    const std::string address_host =
++        ip.find(':') == std::string::npos ? ip : "[" + ip + "]";
++    const std::string host = !host_name.empty()
++        ? host_name
++        : address_host + ":" + port_string;
++    const std::string wire = std::string(post ? "POST" : "GET") +
++        " /ctrl-int/1/" + path + " HTTP/1.1\r\nHost: " + host +
++        "\r\nActive-Remote: " + token +
++        "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+     bool success = false;
+     if (ap::net::send_all(fd, wire.data(), static_cast<int>(wire.size())) == static_cast<int>(wire.size())) {
+         std::string line;
+@@ -88,7 +109,9 @@ bool send_request(const std::string& ip, uint16_t port, const std::string& token
+             status >> version >> code;
+             success = version.rfind("HTTP/", 0) == 0 && code >= 200 && code < 300;
+             LOG_INFO << "DACP media response status=" << code;
+-        } else { LOG_WARN << "DACP media response absent/incomplete"; }
++        } else {
++            LOG_WARN << "DACP media response absent/incomplete";
++        }
+     }
+     ap::net::close_socket(fd);
+     return success;
+@@ -100,38 +123,131 @@ struct DacpRemote::ResolveState {
+     std::mutex mutex;
+     std::condition_variable cv;
+     bool pending{true};
++    bool resolving{false};
+     uint16_t port{0};
++    std::string host_name;
+ #if defined(_WIN32)
+-    std::wstring name;
+-    DNS_SERVICE_RESOLVE_REQUEST request{};
+-    DNS_SERVICE_CANCEL cancel{};
+-    static void WINAPI completed(DWORD status, PVOID context, PDNS_SERVICE_INSTANCE instance) {
++    std::wstring target_service;
++    std::wstring resolve_service;
++    DNS_SERVICE_RESOLVE_REQUEST resolve_request{};
++    DNS_SERVICE_CANCEL resolve_cancel{};
++    DNS_SERVICE_BROWSE_REQUEST browse_request{};
++    DNS_SERVICE_CANCEL browse_cancel{};
++    bool browse_started{false};
++
++    static void WINAPI completed(
++        DWORD status, PVOID context, PDNS_SERVICE_INSTANCE instance) {
+         std::unique_ptr<std::shared_ptr<ResolveState>> owner(
+             static_cast<std::shared_ptr<ResolveState>*>(context));
+         auto state = *owner;
+-        const uint16_t port = status == ERROR_SUCCESS && instance ? instance->wPort : 0;
++        const uint16_t port =
++            status == ERROR_SUCCESS && instance ? instance->wPort : 0;
++        std::string host_name;
++        if (status == ERROR_SUCCESS && instance && instance->pszHostName) {
++            host_name = wide_to_utf8(instance->pszHostName);
++        }
+         if (instance) DnsServiceFreeInstance(instance);
+-        std::lock_guard<std::mutex> lock(state->mutex);
+-        state->port = port;
+-        state->pending = false;
+-        LOG_INFO << "DACP service resolve status=" << status << " port=" << port;
+-        state->cv.notify_all();
++
++        {
++            std::lock_guard<std::mutex> lock(state->mutex);
++            state->resolving = false;
++            if (port != 0) {
++                state->port = port;
++                state->host_name = std::move(host_name);
++                state->pending = false;
++            }
++        }
++        if (port != 0) state->cv.notify_all();
++        LOG_INFO << "DACP service resolve status=" << status
++                 << " port=" << port;
++    }
++
++    static void start_resolve(
++        const std::shared_ptr<ResolveState>& state,
++        const std::wstring& full_name) {
++        {
++            std::lock_guard<std::mutex> lock(state->mutex);
++            if (state->port != 0 || state->resolving) return;
++            state->resolving = true;
++            state->resolve_service = full_name;
++            state->resolve_request = {};
++            state->resolve_request.Version = DNS_QUERY_REQUEST_VERSION1;
++            state->resolve_request.InterfaceIndex = 0;
++            state->resolve_request.QueryName =
++                const_cast<PWSTR>(state->resolve_service.c_str());
++            state->resolve_request.pResolveCompletionCallback = &completed;
++            state->resolve_request.pQueryContext =
++                new std::shared_ptr<ResolveState>(state);
++        }
++        const DWORD status = DnsServiceResolve(
++            &state->resolve_request, &state->resolve_cancel);
++        if (status != DNS_REQUEST_PENDING) {
++            delete static_cast<std::shared_ptr<ResolveState>*>(
++                state->resolve_request.pQueryContext);
++            state->resolve_request.pQueryContext = nullptr;
++            std::lock_guard<std::mutex> lock(state->mutex);
++            state->resolving = false;
++            LOG_WARN << "DACP service resolve could not start: " << status;
++        }
++    }
++
++    static void WINAPI browse_completed(
++        DWORD status, PVOID context, PDNS_RECORD records) {
++        auto* owner =
++            static_cast<std::shared_ptr<ResolveState>*>(context);
++        if (!owner) return;
++        auto state = *owner;
++
++        if (status == ERROR_CANCELLED) {
++            delete owner;
++            return;
++        }
++        if (status != ERROR_SUCCESS || !records) return;
++
++        for (PDNS_RECORD record = records; record; record = record->pNext) {
++            if (record->wType != DNS_TYPE_PTR ||
++                !record->Data.PTR.pNameHost) {
++                continue;
++            }
++            const std::wstring service_name(
++                reinterpret_cast<const wchar_t*>(
++                    record->Data.PTR.pNameHost));
++            if (_wcsicmp(service_name.c_str(),
++                         state->target_service.c_str()) != 0) {
++                continue;
++            }
++            LOG_INFO << "DACP browser found "
++                     << wide_to_utf8(service_name.c_str());
++            start_resolve(state, service_name);
++            break;
++        }
+     }
+ #endif
++
+     static std::shared_ptr<ResolveState> start(const std::string& id) {
+         auto state = std::make_shared<ResolveState>();
+ #if defined(_WIN32)
+-        const std::string name = "iTunes_Ctrl_" + id + "._dacp._tcp.local";
+-        state->name.assign(name.begin(), name.end());
+-        state->request.Version = DNS_QUERY_REQUEST_VERSION1;
+-        state->request.QueryName = state->name.data();
+-        state->request.pResolveCompletionCallback = &completed;
+-        state->request.pQueryContext = new std::shared_ptr<ResolveState>(state);
+-        DWORD status = DnsServiceResolve(&state->request, &state->cancel);
+-        if (status != DNS_REQUEST_PENDING) {
+-            delete static_cast<std::shared_ptr<ResolveState>*>(state->request.pQueryContext);
+-            state->pending = false;
+-            LOG_WARN << "DACP service resolve could not start: " << status;
++        const std::string name =
++            "iTunes_Ctrl_" + id + "._dacp._tcp.local";
++        state->target_service.assign(name.begin(), name.end());
++        state->browse_request.Version = DNS_QUERY_REQUEST_VERSION1;
++        state->browse_request.InterfaceIndex = 0;
++        state->browse_request.QueryName = L"_dacp._tcp.local";
++        state->browse_request.pBrowseCallback = &browse_completed;
++        state->browse_request.pQueryContext =
++            new std::shared_ptr<ResolveState>(state);
++        const DWORD status = DnsServiceBrowse(
++            &state->browse_request, &state->browse_cancel);
++        if (status == DNS_REQUEST_PENDING) {
++            state->browse_started = true;
++            LOG_INFO << "DACP browser started for " << id;
++        } else {
++            delete static_cast<std::shared_ptr<ResolveState>*>(
++                state->browse_request.pQueryContext);
++            state->browse_request.pQueryContext = nullptr;
++            LOG_WARN << "DACP browser could not start: " << status
++                     << " (using direct resolve)";
++            start_resolve(state, state->target_service);
+         }
+ #else
+         (void)id;
+@@ -139,12 +255,22 @@ struct DacpRemote::ResolveState {
+ #endif
+         return state;
+     }
++
+     void cancel_query() {
+ #if defined(_WIN32)
+-        std::unique_lock<std::mutex> lock(mutex);
+-        if (!pending) return;
+-        lock.unlock();
+-        DnsServiceResolveCancel(&cancel);
++        bool cancel_browse = false;
++        bool cancel_resolve = false;
++        {
++            std::lock_guard<std::mutex> lock(mutex);
++            cancel_browse = browse_started;
++            browse_started = false;
++            cancel_resolve = resolving;
++        }
++        if (cancel_browse) {
++            const DWORD status = DnsServiceBrowseCancel(&browse_cancel);
++            LOG_INFO << "DACP browser cancel status=" << status;
++        }
++        if (cancel_resolve) DnsServiceResolveCancel(&resolve_cancel);
+ #endif
+     }
+ };
+@@ -186,19 +312,26 @@ bool DacpRemote::send(MediaCommand command, uint32_t position_ms, const std::str
+     std::unique_lock<std::mutex> lock(state->mutex);
+     state->cv.wait_for(lock, std::chrono::milliseconds(750), [&] { return !state->pending; });
+     const uint16_t port = state->port;
++    const std::string host_name = state->host_name;
+     lock.unlock();
+     if (!port) { LOG_WARN << "Audio control: DACP sender service unavailable"; return false; }
+ #if defined(_WIN32)
+     std::string path;
+     switch (command) {
++        case MediaCommand::Play: path = "play"; break;
++        case MediaCommand::Pause: path = "pause"; break;
+         case MediaCommand::PlayPause: path = "playpause"; break;
+         case MediaCommand::Previous: path = "previtem"; break;
+         case MediaCommand::Next: path = "nextitem"; break;
++        case MediaCommand::VolumeUp: path = "volumeup"; break;
++        case MediaCommand::VolumeDown: path = "volumedown"; break;
++        case MediaCommand::MuteToggle: path = "mutetoggle"; break;
+         case MediaCommand::Seek: path = "setproperty?dacp.playingtime=" + std::to_string(position_ms); break;
+         default: return false;
+     }
+     LOG_INFO << "Audio control: " << path;
+-    return send_request(peer_ip_, port, token, path, command == MediaCommand::Seek);
++    return send_request(peer_ip_, port, token, host_name, path,
++                        command == MediaCommand::Seek);
+ #else
+     (void)command; (void)position_ms;
+     return false;
+diff --git a/src/airplay/media_control.h b/src/airplay/media_control.h
+index 2dd9f82..6f37069 100644
+--- a/src/airplay/media_control.h
++++ b/src/airplay/media_control.h
+@@ -1,5 +1,15 @@
+ #pragma once
+ #include <cstdint>
+ namespace ap::airplay {
+-enum class MediaCommand { PlayPause, Previous, Next, Seek };
++enum class MediaCommand {
++    Play,
++    Pause,
++    PlayPause,
++    Previous,
++    Next,
++    VolumeUp,
++    VolumeDown,
++    MuteToggle,
++    Seek,
++};
+ }
+diff --git a/src/airplay/routes.cpp b/src/airplay/routes.cpp
+index 6f57a84..9842325 100644
+--- a/src/airplay/routes.cpp
++++ b/src/airplay/routes.cpp
+@@ -13,6 +13,7 @@
+ #include "crypto/fairplay.h"
+ #include "crypto/pair_verify.h"
+ #include "log.h"
++#include "platform/macast_bridge.h"
+ #include "video/hls_player.h"
+ #include "video/video_renderer.h"
+ 
+@@ -555,6 +556,7 @@ Response handle_teardown(const DeviceContext& ctx, ClientSession& session, const
+             session.renderer->clear_session();
+             session.renderer->clear_active_device();
+         }
++        ap::platform::MacastBridge::instance().clear_media();
+         LOG_INFO << "TEARDOWN: renderer.clear_session() done";
+         // Full session end: stop the HLS player so the player thread
+         // doesn't keep fetching stale segments.
+@@ -669,6 +671,8 @@ Response handle_set_parameter(ClientSession& session, const Request& req) {
+                          << (total_ms / 1000) << "s";
+                 if (session.renderer) {
+                     session.renderer->push_progress(elapsed_ms, total_ms);
++                    ap::platform::MacastBridge::instance().update_progress(
++                        elapsed_ms, total_ms);
+                 }
+             } else {
+                 LOG_INFO << "playback " << body_str;
+@@ -680,6 +684,7 @@ Response handle_set_parameter(ClientSession& session, const Request& req) {
+                 LOG_INFO << "playback rate=" << rate
+                          << (rate > 0.5f ? " (playing)" : " (paused)");
+                 if (session.renderer) session.renderer->push_playback_rate(rate);
++                ap::platform::MacastBridge::instance().update_rate(rate);
+             } catch (...) {
+                 LOG_WARN << "SET_PARAMETER: bad rate value";
+             }
+@@ -695,6 +700,7 @@ Response handle_set_parameter(ClientSession& session, const Request& req) {
+         if (session.renderer) {
+             session.renderer->push_cover_art(req.body.data(), req.body.size());
+         }
++        ap::platform::MacastBridge::instance().update_cover();
+         return r;
+     }
+ 
+@@ -714,6 +720,8 @@ Response handle_set_parameter(ClientSession& session, const Request& req) {
+                      << ')';
+             if (session.renderer) {
+                 session.renderer->push_metadata(md.title, md.artist, md.album);
++                ap::platform::MacastBridge::instance().update_metadata(
++                    md.title, md.artist, md.album, md.duration_ms);
+             }
+         } else {
+             LOG_INFO << "SET_PARAMETER dmap body=" << req.body.size() << " B "
+diff --git a/src/airplay/server.cpp b/src/airplay/server.cpp
+index 08574af..977810a 100644
+--- a/src/airplay/server.cpp
++++ b/src/airplay/server.cpp
+@@ -4,6 +4,7 @@
+ #include "video/hls_player.h"
+ #include "airplay/reverse_channel.h"
+ #include "log.h"
++#include "platform/macast_bridge.h"
+ 
+ namespace ap::airplay {
+ 
+@@ -85,10 +86,12 @@ void Server::handle_client(ap::net::ClientSocket client) {
+ 
+     while (reader.read(client.fd, req)) {
+         if (req.method == "SETUP" || req.method == "ANNOUNCE" || req.method == "RECORD") {
++            const std::string dacp_id = req.header("dacp-id");
++            const std::string active_remote = req.header("active-remote");
+             LOG_INFO << "control " << client.peer << " method=" << req.method
+                      << " content-type=" << req.header("content-type")
+-                     << " DACP-ID-present=" << !req.header("dacp-id").empty()
+-                     << " Active-Remote-present=" << !req.header("active-remote").empty();
++                     << " DACP-ID=" << (dacp_id.empty() ? "-" : dacp_id)
++                     << " Active-Remote-length=" << active_remote.size();
+         }
+         Response res = dispatch(ctx_, session, req);
+         remote->update(req.header("dacp-id"), req.header("active-remote"),
+@@ -115,7 +118,9 @@ void Server::handle_client(ap::net::ClientSocket client) {
+         ? session.streams->session_id() : std::string{};
+     session.streams.reset();
+     if (ctx_.renderer && !ended_session.empty()) {
+-        ctx_.renderer->clear_session_if_active(ended_session);
++        if (ctx_.renderer->clear_session_if_active(ended_session)) {
++            ap::platform::MacastBridge::instance().clear_media();
++        }
+     }
+     LOG_INFO << "closing " << client.peer;
+     {
+diff --git a/src/audio/audio_output.cpp b/src/audio/audio_output.cpp
+index 0b2ab2b..c803c14 100644
+--- a/src/audio/audio_output.cpp
++++ b/src/audio/audio_output.cpp
+@@ -4,10 +4,63 @@
+ #include <SDL.h>
+ 
+ #include <algorithm>
++#include <cctype>
+ #include <cmath>
++#include <cstdlib>
++#include <string>
+ #include <vector>
+ 
+ namespace ap::audio {
++namespace {
++
++std::string lower_ascii(std::string value) {
++    std::transform(value.begin(), value.end(), value.begin(),
++        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++    return value;
++}
++
++bool looks_like_remote_or_virtual(const char* device_name) {
++    if (!device_name) return false;
++    const std::string lower = lower_ascii(device_name);
++    return lower.find("virtual") != std::string::npos ||
++           lower.find("todesk") != std::string::npos ||
++           lower.find("remotecontrol") != std::string::npos ||
++           lower.find(u8"虚拟") != std::string::npos;
++}
++
++std::string choose_output_device() {
++    if (const char* configured = std::getenv("MACAST_AIRPLAY_AUDIO_DEVICE");
++        configured && *configured) {
++        return configured;
++    }
++
++    char* default_name = nullptr;
++    SDL_AudioSpec default_spec{};
++    std::string selected;
++    if (SDL_GetDefaultAudioInfo(&default_name, &default_spec, 0) == 0 &&
++        default_name) {
++        selected = default_name;
++        LOG_INFO << "SDL default output: " << selected;
++    }
++    SDL_free(default_name);
++
++    if (!looks_like_remote_or_virtual(selected.c_str())) return selected;
++
++    const int count = SDL_GetNumAudioDevices(0);
++    for (int i = 0; i < count; ++i) {
++        const char* candidate = SDL_GetAudioDeviceName(i, 0);
++        if (!candidate || looks_like_remote_or_virtual(candidate)) continue;
++        selected = candidate;
++        LOG_WARN << "Default audio output is remote/virtual; using \""
++                 << selected << "\" instead";
++        return selected;
++    }
++    LOG_WARN << "Default audio output is remote/virtual and no local "
++                "playback endpoint was found";
++    return {};
++}
++
++} // namespace
+ 
+ SdlAudioOutput::SdlAudioOutput()  = default;
+ SdlAudioOutput::~SdlAudioOutput() { stop(); }
+@@ -26,9 +79,12 @@ bool SdlAudioOutput::start(int sample_rate, int channels) {
+     want.callback = nullptr;          // push mode via SDL_QueueAudio
+ 
+     SDL_AudioSpec got{};
++    const std::string selected_device = choose_output_device();
++    const char* open_device =
++        selected_device.empty() ? nullptr : selected_device.c_str();
+     // PCM is always supplied at the decoder's frequency/channel count.
+     // SDL performs any hardware conversion instead of changing this contract.
+-    device_ = SDL_OpenAudioDevice(nullptr, 0, &want, &got, 0);
++    device_ = SDL_OpenAudioDevice(open_device, 0, &want, &got, 0);
+     if (device_ == 0) {
+         LOG_ERROR << "SDL_OpenAudioDevice failed: " << SDL_GetError();
+         SDL_QuitSubSystem(SDL_INIT_AUDIO);
+@@ -39,7 +95,10 @@ bool SdlAudioOutput::start(int sample_rate, int channels) {
+     channels_    = got.channels;
+     buffer_frames_ = got.samples;
+     SDL_PauseAudioDevice(device_, 0);
+-    LOG_INFO << "SdlAudioOutput playing at " << sample_rate_ << " Hz x "
++    LOG_INFO << "SdlAudioOutput playing via "
++             << (SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "unknown")
++             << " to \"" << (open_device ? open_device : "SDL default")
++             << "\" at " << sample_rate_ << " Hz x "
+              << channels_ << "ch (format int16)";
+     return true;
+ }
+diff --git a/src/main.cpp b/src/main.cpp
+index 71c0f07..89317cf 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -18,6 +18,7 @@
+ #include "settings.h"
+ #include "platform/single_instance.h"
+ #include "platform/firewall.h"
++#include "platform/macast_bridge.h"
+ #include "usb/usb_supervisor.h"
+ #include "video/video_renderer.h"
+ 
+@@ -156,6 +157,8 @@ int main(int argc, char** argv) {
+     // via the signed-CDN path we built.
+     bool hls_playback = false;
+     bool mirror_hwaccel = saved.mirror_hwaccel;
++    bool standard_frame = false;
++    bool start_hidden = false;
+     int  mirror_w = saved.mirror_width;
+     int  mirror_h = saved.mirror_height;
+     for (int i = 1; i < argc; ++i) {
+@@ -164,6 +167,9 @@ int main(int argc, char** argv) {
+             hls_playback = true;
+         } else if (arg == "--mirror-hwaccel") {
+             mirror_hwaccel = true;
++        } else if (arg == "--macast-windowed") {
++            standard_frame = true;
++            start_hidden = true;
+         } else if ((arg == "--mirror-res" || arg == "-r") && i + 1 < argc) {
+             // Accept "WxH" or "WxHi" with either separator, e.g. 1920x1080,
+             // 2560x1440, 3840x2160. Anything malformed falls back silently
+@@ -194,6 +200,7 @@ int main(int argc, char** argv) {
+             std::puts(
+                 "AirPlay-Windows [--log] [--hls-proxy-playback]\n"
+                 "                [--mirror-res WxH] [--mirror-hwaccel]\n"
++                "                [--macast-windowed]\n"
+                 "  --log / --verbose     print init/runtime logs to stderr\n"
+                 "                        (off by default in the released\n"
+                 "                        binary)\n"
+@@ -209,7 +216,9 @@ int main(int argc, char** argv) {
+                 "  --mirror-hwaccel      decode mirror H.264/HEVC on the GPU\n"
+                 "                        (D3D11VA, GPU-resident presentation).\n"
+                 "                        No CPU pixel readback for display.\n"
+-                "                        Software fallback if unavailable.");
++                "                        Software fallback if unavailable.\n"
++                "  --macast-windowed     use a standard Windows frame and keep\n"
++                "                        the window hidden until Macast shows it.");
+             ap::net::global_shutdown();
+             return 0;
+         }
+@@ -274,7 +283,7 @@ int main(int argc, char** argv) {
+     // frames once an iPhone connects.
+     ap::video::VideoRenderer renderer;
+     renderer.set_live_settings(&live_settings);
+-    if (!renderer.start("AirPlay-Windows")) {
++    if (!renderer.start("AirPlay-Windows", standard_frame, start_hidden)) {
+         LOG_WARN << "VideoRenderer could not start — running headless";
+     }
+     // Prefer the v4 address on the idle screen (shorter, more familiar),
+@@ -305,12 +314,19 @@ int main(int argc, char** argv) {
+     struct AudioRequest { ap::airplay::MediaCommand command; uint32_t position; std::string session_id; };
+     std::mutex audio_request_mutex;
+     std::optional<AudioRequest> audio_request;
+-    renderer.set_audio_control_handler([&](ap::airplay::MediaCommand command, uint32_t position) {
++    auto enqueue_audio_request =
++        [&](ap::airplay::MediaCommand command, uint32_t position) -> bool {
+         ap::video::VideoRenderer::DeviceInfo device;
+         renderer.active_device_snapshot(device);
+         std::lock_guard<std::mutex> lock(audio_request_mutex);
+         audio_request = AudioRequest{command, position, device.session_id};
+-    });
++        return true;
++    };
++    renderer.set_audio_control_handler(
++        [&](ap::airplay::MediaCommand command, uint32_t position) {
++            enqueue_audio_request(command, position);
++        });
++    ap::platform::MacastBridge::instance().start(enqueue_audio_request);
+ 
+     // Local HTTP proxy + libavformat player only when the HLS path is
+     // opted into. In the default (mirror + RAOP) mode nothing connects
+@@ -370,7 +386,10 @@ int main(int argc, char** argv) {
+         }
+         ap::video::VideoRenderer::DeviceInfo current_device;
+         renderer.active_device_snapshot(current_device);
+-        renderer.set_audio_control_available(server.audio_control_available(current_device.session_id));
++        const bool audio_control =
++            server.audio_control_available(current_device.session_id);
++        renderer.set_audio_control_available(audio_control);
++        ap::platform::MacastBridge::instance().update_control(audio_control);
+         const auto current_settings = ap::snapshot(live_settings);
+         const auto settings_now = std::chrono::steady_clock::now();
+         if (!(current_settings == observed_settings)) {
+@@ -387,6 +406,7 @@ int main(int argc, char** argv) {
+ 
+     LOG_INFO << "Shutting down... (g_stop=" << g_stop.load()
+              << " user_closed=" << renderer.user_closed() << ")";
++    ap::platform::MacastBridge::instance().stop();
+     // Withdraw discovery and interrupt sessions before stopping peripherals.
+     server.stop();
+     mdns.stop();
+diff --git a/src/video/video_renderer.cpp b/src/video/video_renderer.cpp
+index 426a93a..b6a5a66 100644
+--- a/src/video/video_renderer.cpp
++++ b/src/video/video_renderer.cpp
+@@ -397,8 +397,17 @@ AVBufferRef* VideoRenderer::gpu_device_ref() {
+     return running_.load() && gpu_device_ ? av_buffer_ref(gpu_device_) : nullptr;
+ }
+ 
+-bool VideoRenderer::start(const std::string& title) {
++bool VideoRenderer::start(const std::string& title,
++                          bool standard_frame,
++                          bool start_hidden) {
+     running_ = true;
++    standard_frame_ = standard_frame;
++    start_hidden_ = start_hidden;
++#if defined(_WIN32)
++    if (!media_session_) {
++        media_session_ = std::make_unique<ap::platform::WindowsMediaSession>();
++    }
++#endif
+     thread_  = std::thread(&VideoRenderer::run, this, title);
+     return true;
+ }
+@@ -407,6 +416,9 @@ void VideoRenderer::stop() {
+     running_.store(false);
+     cv_.notify_all();
+     if (thread_.joinable()) thread_.join();
++#if defined(_WIN32)
++    media_session_.reset();
++#endif
+     if (recorder_) recorder_->stop();
+ }
+ 
+@@ -424,6 +436,11 @@ void VideoRenderer::push_progress(uint32_t elapsed_ms, uint32_t total_ms) {
+     progress_elapsed_ms_.store(elapsed_ms, std::memory_order_relaxed);
+     progress_total_ms_.store(total_ms,     std::memory_order_relaxed);
+     progress_pushed_at_ns_.store(ns,       std::memory_order_relaxed);
++#if defined(_WIN32)
++    if (media_session_) {
++        media_session_->set_timeline(elapsed_ms, total_ms);
++    }
++#endif
+     cv_.notify_one();
+ }
+ 
+@@ -434,9 +451,21 @@ void VideoRenderer::push_playback_rate(float rate) {
+         LOG_INFO << "VideoRenderer playback state: "
+                  << (new_playing ? "PLAYING" : "PAUSED");
+     }
++#if defined(_WIN32)
++    if (media_session_) media_session_->set_playback(new_playing);
++#endif
+     cv_.notify_one();
+ }
+ 
++void VideoRenderer::set_audio_control_available(bool available) {
++    audio_control_available_.store(available);
++#if defined(_WIN32)
++    if (media_session_) {
++        media_session_->set_controls_available(available);
++    }
++#endif
++}
++
+ void VideoRenderer::note_flush() {
+     constexpr int64_t grace_ms = 500;
+     const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+@@ -485,6 +514,9 @@ void VideoRenderer::clear_session() {
+     progress_total_ms_.store(0,   std::memory_order_relaxed);
+     progress_pushed_at_ns_.store(0, std::memory_order_relaxed);
+     playing_.store(true, std::memory_order_relaxed);
++#if defined(_WIN32)
++    if (media_session_) media_session_->clear();
++#endif
+     clear_cover_requested_.store(true, std::memory_order_relaxed);
+     // Reset the per-session stats so the status bar starts fresh on
+     // the next paired device — "how much did this session use?" is
+@@ -653,6 +685,11 @@ void VideoRenderer::push_metadata(const std::string& title,
+     meta_artist_ = artist;
+     meta_album_  = album;
+     meta_dirty_  = true;
++#if defined(_WIN32)
++    if (media_session_) {
++        media_session_->set_metadata(title, artist, album);
++    }
++#endif
+     cv_.notify_one();
+ }
+ 
+@@ -786,9 +823,12 @@ void VideoRenderer::run(const std::string& title) {
+                               : available.y + (available.h - initial_h) / 2;
+         }
+     }
++    Uint32 window_flags = SDL_WINDOW_RESIZABLE;
++    if (!standard_frame_) window_flags |= SDL_WINDOW_BORDERLESS;
++    if (start_hidden_) window_flags |= SDL_WINDOW_HIDDEN;
+     SDL_Window*   window   = SDL_CreateWindow(
+         title.c_str(), initial_x, initial_y, initial_w, initial_h,
+-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS);
++        window_flags);
+     // Read the initial vsync preference from LiveSettings (default
+     // true). Toggling at runtime is handled by SDL_RenderSetVSync
+     // below in the render loop.
+@@ -820,9 +860,64 @@ void VideoRenderer::run(const std::string& title) {
+ #if defined(_WIN32)
+     SDL_SysWMinfo instance_window_info{};
+     SDL_VERSION(&instance_window_info.version);
+-    if (SDL_GetWindowWMInfo(window, &instance_window_info))
+-        SetPropW(instance_window_info.info.win.window,
+-                 ap::platform::kInstanceWindowProperty, reinterpret_cast<HANDLE>(1));
++    if (SDL_GetWindowWMInfo(window, &instance_window_info)) {
++        HWND hwnd = instance_window_info.info.win.window;
++        SetPropW(hwnd, ap::platform::kInstanceWindowProperty,
++                 reinterpret_cast<HANDLE>(1));
++
++        // Resource ID 1 is the Macast icon embedded by airplay-windows.rc.
++        // Set both title-bar sizes explicitly; SDL's shared window class
++        // otherwise falls back to the generic Windows application icon.
++        HICON large_icon = static_cast<HICON>(LoadImageW(
++            GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON,
++            GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON),
++            LR_DEFAULTCOLOR | LR_SHARED));
++        HICON small_icon = static_cast<HICON>(LoadImageW(
++            GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON,
++            GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
++            LR_DEFAULTCOLOR | LR_SHARED));
++        if (large_icon) {
++            SendMessageW(hwnd, WM_SETICON, ICON_BIG,
++                         reinterpret_cast<LPARAM>(large_icon));
++            SetClassLongPtrW(hwnd, GCLP_HICON,
++                             reinterpret_cast<LONG_PTR>(large_icon));
++        }
++        if (small_icon) {
++            SendMessageW(hwnd, WM_SETICON, ICON_SMALL,
++                         reinterpret_cast<LPARAM>(small_icon));
++            SetClassLongPtrW(hwnd, GCLP_HICONSM,
++                             reinterpret_cast<LONG_PTR>(small_icon));
++        }
++
++        if (media_session_->initialize(
++                hwnd,
++                [this](ap::airplay::MediaCommand command) {
++                    if (audio_control_handler_) {
++                        audio_control_handler_(command, 0);
++                    }
++                })) {
++            // Metadata may arrive before this window-thread initialization.
++            // Publish the latest renderer state once the SMTC worker is ready.
++            std::string current_title;
++            std::string current_artist;
++            std::string current_album;
++            {
++                std::lock_guard<std::mutex> lock(meta_mtx_);
++                current_title = meta_title_;
++                current_artist = meta_artist_;
++                current_album = meta_album_;
++            }
++            media_session_->set_metadata(
++                current_title, current_artist, current_album);
++            media_session_->set_playback(
++                playing_.load(std::memory_order_relaxed));
++            media_session_->set_timeline(
++                progress_elapsed_ms_.load(std::memory_order_relaxed),
++                progress_total_ms_.load(std::memory_order_relaxed));
++            media_session_->set_controls_available(
++                audio_control_available_.load());
++        }
++    }
+ #endif
+     gpu_video.init(renderer);
+     {
+@@ -931,7 +1026,7 @@ void VideoRenderer::run(const std::string& title) {
+     ui.diagnostics = preferences.diagnostics;
+     if (live_settings_)
+         ui.chromeless = live_settings_->chromeless.load(std::memory_order_relaxed);
+-    if (SDL_SetWindowHitTest(window, hit_test_cb, &ui) != 0)
++    if (!standard_frame_ && SDL_SetWindowHitTest(window, hit_test_cb, &ui) != 0)
+         LOG_WARN << "Window resize hit-test unavailable: " << SDL_GetError();
+     if (ui.chromeless) SDL_SetWindowMinimumSize(window, 160, 120);
+ 
+diff --git a/src/video/video_renderer.h b/src/video/video_renderer.h
+index f69f613..1b553d6 100644
+--- a/src/video/video_renderer.h
++++ b/src/video/video_renderer.h
+@@ -12,6 +12,10 @@
+ #include <thread>
+ #include <vector>
+ 
++#if defined(_WIN32)
++#include "platform/windows_media_session.h"
++#endif
++
+ extern "C" {
+ struct AVFrame;
+ struct AVBufferRef;
+@@ -60,7 +64,9 @@ public:
+ 
+     // Initialise SDL, create the window at a default size, start the
+     // rendering thread. Returns false on SDL failure.
+-    bool start(const std::string& title = "AirPlay-Windows");
++    bool start(const std::string& title = "AirPlay-Windows",
++               bool standard_frame = false,
++               bool start_hidden = false);
+ 
+     // Tell the thread to exit, join it, tear down SDL.
+     void stop();
+@@ -184,7 +190,7 @@ public:
+     // thread when the user clicks; should drop every connected
+     // AirPlay client (typically Server::disconnect_clients).
+     void set_audio_control_handler(std::function<void(ap::airplay::MediaCommand, uint32_t)> handler);
+-    void set_audio_control_available(bool available) { audio_control_available_.store(available); }
++    void set_audio_control_available(bool available);
+     void audio_command_finished(bool success) {
+         audio_command_failed_.store(!success);
+         audio_command_pending_.store(false);
+@@ -202,7 +208,12 @@ private:
+     std::atomic<bool> running_{false};
+     std::atomic<bool> show_requested_{false};
+     std::atomic<bool> closed_{false};
++    bool standard_frame_{false};
++    bool start_hidden_{false};
+     std::thread       thread_;
++#if defined(_WIN32)
++    std::unique_ptr<ap::platform::WindowsMediaSession> media_session_;
++#endif
+ 
+     // Single-slot frame buffer (producer overwrites, consumer reads).
+     // Two layouts share the same slot — `frame_is_nv12_` selects:

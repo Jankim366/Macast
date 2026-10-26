@@ -23,21 +23,28 @@ git -C $SourceDirectory checkout $Version
 
 Copy-Item -LiteralPath (Join-Path $repoRoot "macast\assets\icon.ico") `
     -Destination (Join-Path $SourceDirectory "src\macast.ico") -Force
+
+$patchPath = Join-Path $PSScriptRoot "airplay-windows-macast-complete.patch"
+$previousErrorPreference = $ErrorActionPreference
+$ErrorActionPreference = "SilentlyContinue"
+git -C $SourceDirectory apply --recount --reverse --check $patchPath 2>&1 |
+    Out-Null
+$alreadyApplied = $LASTEXITCODE -eq 0
+$ErrorActionPreference = $previousErrorPreference
+if (-not $alreadyApplied) {
+    git -C $SourceDirectory apply --recount $patchPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to apply airplay-windows-macast-complete.patch. Use a clean AirPlay-Windows checkout."
+    }
+} else {
+    Write-Host "airplay-windows-macast-complete.patch is already applied."
+}
+
+# The overlay carries the final Macast integration files. Apply it after the
+# upstream patches so repeated builds are deterministic even when the
+# AirPlay-Windows checkout already contains an older integration revision.
 Copy-Item -Path (Join-Path $PSScriptRoot "airplay-windows-overlay\*") `
     -Destination $SourceDirectory -Recurse -Force
-
-foreach ($patchName in @(
-        "airplay-windows-macast.patch",
-        "airplay-windows-icon.patch",
-        "airplay-windows-bridge.patch")) {
-    $patchPath = Join-Path $PSScriptRoot $patchName
-    git -C $SourceDirectory apply --recount --reverse --check $patchPath 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        git -C $SourceDirectory apply --recount $patchPath
-    } else {
-        Write-Host "$patchName is already applied."
-    }
-}
 
 if (-not (Test-Path -LiteralPath (Join-Path $VcpkgDirectory ".git"))) {
     git clone --filter=blob:none https://github.com/microsoft/vcpkg.git $VcpkgDirectory

@@ -210,20 +210,37 @@ std::vector<DeviceRecord> list_devices() {
 
 void start_device_watcher() {
     try {
+        auto properties =
+            winrt::single_threaded_vector<winrt::hstring>();
+        properties.Append(L"System.Devices.Aep.IsConnected");
+        properties.Append(L"System.Devices.Aep.IsPresent");
         g_device_watcher = DeviceInformation::CreateWatcher(
-            AudioPlaybackConnection::GetDeviceSelector());
+            AudioPlaybackConnection::GetDeviceSelector(),
+            properties);
         g_device_watcher.Added(
             [](const DeviceWatcher&,
                const DeviceInformation& device) {
                 if (g_stop.load()) return;
+                bool connected = false;
+                try {
+                    const auto values = device.Properties();
+                    if (values.HasKey(
+                            L"System.Devices.Aep.IsConnected")) {
+                        connected = winrt::unbox_value<bool>(
+                            values.Lookup(
+                                L"System.Devices.Aep.IsConnected"));
+                    }
+                } catch (...) {
+                }
                 std::lock_guard lock(g_devices_mutex);
                 g_known_devices[std::wstring(device.Id())] = DeviceRecord{
                     std::wstring(device.Id()),
                     std::wstring(device.Name()),
-                    true,
+                    connected,
                 };
                 log_line("Bluetooth audio device available: " +
-                         utf8(device.Name()));
+                         utf8(device.Name()) +
+                         (connected ? " (connected)" : " (paired)"));
             });
         g_device_watcher.Updated(
             [](const DeviceWatcher&,
@@ -233,7 +250,17 @@ void start_device_watcher() {
                 const auto found = g_known_devices.find(
                     std::wstring(update.Id()));
                 if (found != g_known_devices.end()) {
-                    found->second.connected = true;
+                    try {
+                        const auto values = update.Properties();
+                        if (values.HasKey(
+                                L"System.Devices.Aep.IsConnected")) {
+                            found->second.connected =
+                                winrt::unbox_value<bool>(
+                                    values.Lookup(
+                                        L"System.Devices.Aep.IsConnected"));
+                        }
+                    } catch (...) {
+                    }
                 }
             });
         g_device_watcher.Removed(
@@ -572,6 +599,7 @@ void auto_connection_loop() {
                  index < count && g_auto_mode.load() && !g_stop.load();
                  ++index) {
                 const auto& device = devices[index];
+                if (!device.connected) continue;
                 arm_device(device.id, device.name);
             }
         }

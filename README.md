@@ -84,6 +84,8 @@ This fork extends Macast with an independent
 - AirPlay publishing is pinned to the physical Wi-Fi/Ethernet interface and its
   real IPv4/MAC address. FlClash, ZeroTier and VPN adapters are not allowed to
   capture the AirPlay mDNS record; DACP browsing uses the same LAN interface.
+- The backend watches the physical LAN address once per second and automatically
+  withdraws/re-publishes mDNS after switching Wi-Fi, a phone hotspot or Ethernet.
 - The packed backend is staged in Macast's stable user-data directory so its
   Windows Firewall rule survives PyInstaller's changing `_MEI...` directories.
   The first run requests administrator permission once to disable stale

@@ -631,7 +631,7 @@ index 0b2ab2b..c803c14 100644
      return true;
  }
 diff --git a/src/main.cpp b/src/main.cpp
-index 71c0f07..f1df844 100644
+index 71c0f07..25e8867 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -18,6 +18,7 @@
@@ -727,7 +727,78 @@ index 71c0f07..f1df844 100644
  
      // Local HTTP proxy + libavformat player only when the HLS path is
      // opted into. In the default (mirror + RAOP) mode nothing connects
-@@ -370,7 +390,10 @@ int main(int argc, char** argv) {
+@@ -326,7 +346,12 @@ int main(int argc, char** argv) {
+     }
+ 
+     ap::mdns::MdnsService mdns;
+-    if (!mdns.start(ctx, server.port())) {
++    std::string advertised_lan_ipv4;
++    uint32_t advertised_lan_index = 0;
++    if (mdns.start(ctx, server.port())) {
++        advertised_lan_ipv4 = lan.ipv4;
++        advertised_lan_index = lan.index;
++    } else {
+         LOG_WARN << "mDNS not available — receiver won't auto-appear on iOS";
+     }
+ 
+@@ -342,6 +367,7 @@ int main(int argc, char** argv) {
+     auto last_saved_settings = ap::snapshot(live_settings);
+     auto observed_settings = last_saved_settings;
+     auto settings_changed_at = std::chrono::steady_clock::now();
++    auto last_network_check = std::chrono::steady_clock::now();
+     while (!g_stop && !renderer.user_closed()) {
+ #if defined(_WIN32)
+         if (instance.activation_requested()) renderer.request_show();
+@@ -349,10 +375,47 @@ int main(int argc, char** argv) {
+         const auto receiver_name = live_settings.receiver_name();
+         if (receiver_name != ctx.name) {
+             mdns.stop();
++            advertised_lan_ipv4.clear();
++            advertised_lan_index = 0;
+             ctx.name = receiver_name;
+             renderer.set_idle_info(ctx.name, display_ip);
+-            if (!mdns.start(ctx, server.port()))
++            if (mdns.start(ctx, server.port())) {
++                const auto current_lan =
++                    ap::net::primary_lan_interface();
++                advertised_lan_ipv4 = current_lan.ipv4;
++                advertised_lan_index = current_lan.index;
++            } else {
+                 LOG_WARN << "Could not advertise the new receiver name";
++            }
++        }
++        const auto network_now = std::chrono::steady_clock::now();
++        if (network_now - last_network_check >=
++                std::chrono::seconds(1)) {
++            last_network_check = network_now;
++            const auto current_lan = ap::net::primary_lan_interface();
++            const bool network_changed =
++                !current_lan.ipv4.empty() &&
++                (advertised_lan_ipv4.empty() ||
++                 current_lan.ipv4 != advertised_lan_ipv4 ||
++                 current_lan.index != advertised_lan_index);
++            if (network_changed) {
++                LOG_INFO << "LAN changed: "
++                         << (advertised_lan_ipv4.empty()
++                                ? "none" : advertised_lan_ipv4)
++                         << " -> " << current_lan.ipv4
++                         << " (interface " << current_lan.index << ')';
++                mdns.stop();
++                advertised_lan_ipv4.clear();
++                advertised_lan_index = 0;
++                renderer.set_idle_info(ctx.name, current_lan.ipv4);
++                if (mdns.start(ctx, server.port())) {
++                    advertised_lan_ipv4 = current_lan.ipv4;
++                    advertised_lan_index = current_lan.index;
++                } else {
++                    LOG_WARN << "Could not re-advertise AirPlay after "
++                                "the LAN changed";
++                }
++            }
+         }
+         if (disconnect_requested.exchange(false)) {
+             LOG_INFO << "Disconnect requested by toolbar";
+@@ -370,7 +433,10 @@ int main(int argc, char** argv) {
          }
          ap::video::VideoRenderer::DeviceInfo current_device;
          renderer.active_device_snapshot(current_device);
@@ -739,7 +810,7 @@ index 71c0f07..f1df844 100644
          const auto current_settings = ap::snapshot(live_settings);
          const auto settings_now = std::chrono::steady_clock::now();
          if (!(current_settings == observed_settings)) {
-@@ -387,6 +410,7 @@ int main(int argc, char** argv) {
+@@ -387,6 +453,7 @@ int main(int argc, char** argv) {
  
      LOG_INFO << "Shutting down... (g_stop=" << g_stop.load()
               << " user_closed=" << renderer.user_closed() << ")";
@@ -748,7 +819,7 @@ index 71c0f07..f1df844 100644
      server.stop();
      mdns.stop();
 diff --git a/src/mdns/mdns_service.cpp b/src/mdns/mdns_service.cpp
-index ff63e26..793cc38 100644
+index ff63e26..281ae5a 100644
 --- a/src/mdns/mdns_service.cpp
 +++ b/src/mdns/mdns_service.cpp
 @@ -1,5 +1,6 @@
@@ -786,12 +857,16 @@ index ff63e26..793cc38 100644
          s.instance.wPort = port;
          s.instance.dwPropertyCount = static_cast<DWORD>(s.keys.size());
          s.instance.keys = s.key_ptrs.data();
-@@ -161,6 +169,20 @@ struct MdnsService::Impl {
+@@ -161,6 +169,24 @@ struct MdnsService::Impl {
              return false;
          }
          std::wstring local_host = std::wstring(host) + L".local";
 +        const ap::net::LanInterface lan =
 +            ap::net::primary_lan_interface();
++        if (lan.index == 0) {
++            LOG_WARN << "No physical LAN interface is ready for AirPlay mDNS";
++            return false;
++        }
 +        IP4_ADDRESS lan_ipv4{};
 +        const bool has_lan_ipv4 =
 +            !lan.ipv4.empty() &&
@@ -807,7 +882,7 @@ index ff63e26..793cc38 100644
  
          // Hex-encode the Ed25519 public key for the `pk` TXT value (64
          // chars for 32 bytes). iOS uses it to match the receiver
-@@ -177,6 +199,7 @@ struct MdnsService::Impl {
+@@ -177,6 +203,7 @@ struct MdnsService::Impl {
  
          // ---- _airplay._tcp --------------------------------------------------
          airplay->host_name     = local_host;
@@ -815,7 +890,7 @@ index ff63e26..793cc38 100644
          airplay->instance_name = widen(ctx.name) + L"._airplay._tcp.local";
          airplay->keys          = { L"deviceid", L"features", L"flags", L"model",
                                    L"pi", L"pk", L"pw", L"srcvers", L"vv" };
-@@ -194,6 +217,7 @@ struct MdnsService::Impl {
+@@ -194,6 +221,7 @@ struct MdnsService::Impl {
          std::string raop_name = hex + "@" + ctx.name;
  
          raop->host_name     = local_host;

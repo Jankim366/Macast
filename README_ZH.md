@@ -111,6 +111,8 @@ AirPlay 屏幕镜像与音频接收进程的部署、配置和验证方式见
   mDNS 记录；FlClash、ZeroTier、VPN 等虚拟网卡不会抢占 AirPlay 广播。
   DACP 反向控制也使用同一个物理 LAN 接口；链路本地 IPv6 地址会保留
   `%接口序号` scope。
+- AirPlay 后端每秒检查一次实际 LAN 接口和 IPv4。切换 Wi-Fi、手机热点或
+  网线后会自动撤销旧 mDNS 记录并重新发布，不再需要手动重启 AirPlay。
 - PyInstaller 临时目录每次启动都会变化，因此 Macast 会把 AirPlay 后端复制到
   固定的用户配置目录，并按该固定路径维护 Windows 防火墙规则。首次运行固定
   路径后端时会请求一次管理员权限，以取消旧临时路径留下的 Block 规则并添加

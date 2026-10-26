@@ -22,6 +22,10 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
   including its concrete IPv4 address and interface index. Proxy, VPN,
   container and other virtual adapters are skipped, so a FlClash/ZeroTier
   route cannot publish AirPlay only on `198.18.0.1` or `10.147.x.x`.
+- The receiver checks the selected LAN interface and IPv4 once per second.
+  When Windows changes networks, it stops the old mDNS registration and
+  advertises the same receiver on the new physical LAN without restarting the
+  AirPlay process.
 - DACP and mDNS both use the same physical LAN interface index. The LAN tests
   register a temporary receiver and verify that `_airplay._tcp.local` is
   immediately discoverable on that interface before packaging.

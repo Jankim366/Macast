@@ -67,6 +67,12 @@ class BluetoothAudioProcessManager:
         return os.path.join(self.working_dir, self.STATE_FILE_NAME)
 
     @property
+    def log_path(self):
+        if not self.working_dir:
+            return None
+        return os.path.join(self.working_dir, "macast_bluetooth_audio.log")
+
+    @property
     def state(self):
         with self._lock:
             return self._state
@@ -165,6 +171,8 @@ class BluetoothAudioProcessManager:
                 self.PIPE_NAME,
                 "--state",
                 self.state_path,
+                "--log",
+                self.log_path,
             ]
             try:
                 self.executable = executable

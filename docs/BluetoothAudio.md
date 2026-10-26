@@ -45,8 +45,9 @@ AirPlay and DLNA:
   and the Bluetooth driver.
 - Audio latency is higher than AirPlay or DLNA and may be unsuitable for
   synchronized video.
-- Some Bluetooth devices report a connected state but need one disconnect and
-  reconnect before audio starts. This behavior also exists in the upstream
+- The backend performs one internal reconnect on its first activation to
+  encourage Windows 11 to create the A2DP output endpoint. Some adapters may
+  still require a manual disconnect/reconnect, as documented by the upstream
   AudioPlaybackConnector project.
 
 ## Source and license

@@ -41,9 +41,12 @@ constexpr wchar_t kDefaultPipeName[] =
     L"\\\\.\\pipe\\Macast-BluetoothAudio-Control-v1";
 
 std::atomic<bool> g_stop{false};
+std::atomic<bool> g_initial_activation_pending{true};
 std::mutex g_state_mutex;
+std::mutex g_log_mutex;
 std::wstring g_pipe_name = kDefaultPipeName;
 std::wstring g_state_path;
+std::wstring g_log_path;
 std::wstring g_device_id;
 std::wstring g_device_name;
 std::wstring g_error;
@@ -62,6 +65,21 @@ std::string utf8(const std::wstring& value) {
 
 std::wstring wide(const winrt::hstring& value) {
     return std::wstring(value.c_str(), value.size());
+}
+
+void log_line(const std::string& message) {
+    if (g_log_path.empty()) return;
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    std::lock_guard lock(g_log_mutex);
+    std::ofstream out(g_log_path, std::ios::binary | std::ios::app);
+    if (!out) return;
+    out << '[' << std::setfill('0')
+        << std::setw(2) << now.wHour << ':'
+        << std::setw(2) << now.wMinute << ':'
+        << std::setw(2) << now.wSecond << '.'
+        << std::setw(3) << now.wMilliseconds << "] "
+        << message << '\n';
 }
 
 std::string hex_encode(const std::string& value) {
@@ -184,102 +202,164 @@ std::string devices_json() {
     return out.str();
 }
 
+template <typename Operation>
+bool wait_for_operation(
+        Operation& operation, std::chrono::seconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (operation.Status() ==
+               winrt::Windows::Foundation::AsyncStatus::Started &&
+           std::chrono::steady_clock::now() < deadline &&
+           !g_stop.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (operation.Status() ==
+            winrt::Windows::Foundation::AsyncStatus::Started) {
+        operation.Cancel();
+        return false;
+    }
+    return true;
+}
+
 bool connect_device(
         const std::string& device_id_utf8,
         std::string& error) {
-    try {
-        close_connection();
-        const winrt::hstring device_id =
-            winrt::to_hstring(device_id_utf8);
-        const std::wstring device_id_wide = wide(device_id);
-        if (device_id.empty()) {
-            error = "empty device id";
-            return false;
-        }
-
-        std::wstring device_name;
-        try {
-            const auto info =
-                DeviceInformation::CreateFromIdAsync(device_id).get();
-            device_name = wide(info.Name());
-        } catch (...) {
-        }
-
-        auto connection =
-            AudioPlaybackConnection::TryCreateFromId(device_id);
-        if (!connection) {
-            set_state(
-                "error", device_id_wide,
-                device_name, L"AudioPlaybackConnection unavailable");
-            error = "AudioPlaybackConnection unavailable";
-            return false;
-        }
-
-        uint64_t generation = 0;
-        {
-            std::lock_guard lock(g_state_mutex);
-            g_connection = connection;
-            generation = ++g_generation;
-            g_state = "connecting";
-        g_device_id = device_id_wide;
-            g_device_name = device_name;
-            g_error.clear();
-            publish_state_locked();
-        }
-
-        g_state_token = connection.StateChanged(
-            [generation, device_id_wide, device_name](
-                    const AudioPlaybackConnection& sender,
-                    const winrt::Windows::Foundation::IInspectable&) {
-                try {
-                    {
-                        std::lock_guard lock(g_state_mutex);
-                        if (generation != g_generation) return;
-                    }
-                    if (sender.State() ==
-                            AudioPlaybackConnectionState::Opened) {
-                        set_state(
-                            "connected", device_id_wide, device_name);
-                    } else if (sender.State() ==
-                                   AudioPlaybackConnectionState::Closed) {
-                        set_state(
-                            "disconnected", device_id_wide, device_name);
-                    }
-                } catch (...) {
-                }
-            });
-
-        connection.StartAsync().get();
-        const auto result = connection.OpenAsync().get();
-        if (result.Status() !=
-                AudioPlaybackConnectionOpenResultStatus::Success) {
-            std::wstring status =
-                result.Status() ==
-                    AudioPlaybackConnectionOpenResultStatus::RequestTimedOut
-                ? L"The Bluetooth request timed out"
-                : result.Status() ==
-                    AudioPlaybackConnectionOpenResultStatus::DeniedBySystem
-                ? L"The Bluetooth request was denied by Windows"
-                : L"Unknown Bluetooth connection failure";
-            set_state("error", device_id_wide, device_name, status);
-            error = utf8(status);
-            close_connection();
-            return false;
-        }
-
-        set_state("connected", device_id_wide, device_name);
-        return true;
-    } catch (const winrt::hresult_error& exception) {
-        error = utf8(exception.message());
-        set_state("error", {}, {}, wide(exception.message()));
-        close_connection();
-        return false;
-    } catch (const std::exception& exception) {
-        error = exception.what();
-        set_state("error", {}, {}, wide(winrt::to_hstring(error)));
-        close_connection();
+    const winrt::hstring device_id =
+        winrt::to_hstring(device_id_utf8);
+    const std::wstring device_id_wide = wide(device_id);
+    if (device_id.empty()) {
+        error = "empty device id";
         return false;
     }
+
+    std::wstring device_name;
+    try {
+        const auto info =
+            DeviceInformation::CreateFromIdAsync(device_id).get();
+        device_name = wide(info.Name());
+    } catch (const winrt::hresult_error& exception) {
+        error = utf8(exception.message());
+    } catch (const std::exception& exception) {
+        error = exception.what();
+    }
+
+    close_connection();
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (attempt > 0) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+        log_line("Bluetooth activation attempt " +
+                 std::to_string(attempt + 1));
+        try {
+            auto connection =
+                AudioPlaybackConnection::TryCreateFromId(device_id);
+            if (!connection) {
+                error = "AudioPlaybackConnection unavailable";
+                continue;
+            }
+
+            uint64_t generation = 0;
+            bool warmup = g_initial_activation_pending.load();
+            {
+                std::lock_guard lock(g_state_mutex);
+                g_connection = connection;
+                generation = ++g_generation;
+                g_state = "connecting";
+                g_device_id = device_id_wide;
+                g_device_name = device_name;
+                g_error.clear();
+                publish_state_locked();
+            }
+
+            if (!warmup) {
+                g_state_token = connection.StateChanged(
+                    [generation, device_id_wide, device_name](
+                            const AudioPlaybackConnection& sender,
+                            const winrt::Windows::Foundation::IInspectable&) {
+                        try {
+                            {
+                                std::lock_guard lock(g_state_mutex);
+                                if (generation != g_generation) return;
+                            }
+                            if (sender.State() ==
+                                    AudioPlaybackConnectionState::Opened) {
+                                set_state(
+                                    "connected",
+                                    device_id_wide, device_name);
+                            } else if (sender.State() ==
+                                           AudioPlaybackConnectionState::Closed) {
+                                set_state(
+                                    "disconnected",
+                                    device_id_wide, device_name);
+                            }
+                        } catch (...) {
+                        }
+                    });
+            }
+
+            auto start_operation = connection.StartAsync();
+            if (!wait_for_operation(
+                    start_operation, std::chrono::seconds(10))) {
+                error = "The Bluetooth start request timed out";
+                close_connection();
+                continue;
+            }
+            start_operation.GetResults();
+            log_line("Bluetooth StartAsync completed");
+
+            auto open_operation = connection.OpenAsync();
+            if (!wait_for_operation(
+                    open_operation, std::chrono::seconds(20))) {
+                error = "The Bluetooth open request timed out";
+                close_connection();
+                continue;
+            }
+            const auto result = open_operation.GetResults();
+            log_line("Bluetooth OpenAsync completed");
+            if (result.Status() !=
+                    AudioPlaybackConnectionOpenResultStatus::Success) {
+                error = result.Status() ==
+                        AudioPlaybackConnectionOpenResultStatus::
+                            RequestTimedOut
+                    ? "The Bluetooth request timed out"
+                    : result.Status() ==
+                        AudioPlaybackConnectionOpenResultStatus::
+                            DeniedBySystem
+                    ? "The Bluetooth request was denied by Windows"
+                    : "Unknown Bluetooth connection failure";
+                close_connection();
+                continue;
+            }
+
+            if (warmup) {
+                bool expected = true;
+                if (g_initial_activation_pending.compare_exchange_strong(
+                        expected, false)) {
+                    log_line(
+                        "First A2DP route warm-up succeeded; reconnecting "
+                        "to activate the output endpoint");
+                    close_connection();
+                    continue;
+                }
+            }
+
+            set_state("connected", device_id_wide, device_name);
+            log_line("Bluetooth audio connected");
+            return true;
+        } catch (const winrt::hresult_error& exception) {
+            error = utf8(exception.message());
+            close_connection();
+        } catch (const std::exception& exception) {
+            error = exception.what();
+            close_connection();
+        }
+    }
+
+    set_state(
+        "error", device_id_wide, device_name,
+        wide(winrt::to_hstring(error.empty()
+            ? "Unable to activate Bluetooth audio route" : error)));
+    log_line("Bluetooth audio connection failed: " + error);
+    return false;
 }
 
 bool write_all(HANDLE pipe, const std::string& data) {
@@ -389,6 +469,8 @@ void parse_arguments() {
             g_pipe_name = arguments[++i];
         } else if (argument == L"--state" && i + 1 < argc) {
             g_state_path = arguments[++i];
+        } else if (argument == L"--log" && i + 1 < argc) {
+            g_log_path = arguments[++i];
         }
     }
     LocalFree(arguments);
@@ -416,9 +498,11 @@ int APIENTRY wWinMain(
     }
 
     set_state("disconnected");
+    log_line("Bluetooth audio backend started");
     std::thread(pipe_loop).join();
 
     close_connection();
+    log_line("Bluetooth audio backend stopped");
     ReleaseMutex(mutex);
     CloseHandle(mutex);
     winrt::uninit_apartment();

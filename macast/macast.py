@@ -486,6 +486,8 @@ class Macast(App):
             labels.get(manager.state, manager.state))
         if manager.state == manager.CONNECTED and manager.device_name:
             text += " ({})".format(manager.device_name)
+        elif manager.state == manager.ERROR and manager.message:
+            text += " ({})".format(manager.message)
         return text
 
     def get_bluetooth_audio_toggle_text(self):

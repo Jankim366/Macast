@@ -57,6 +57,7 @@ python Macast.py
 pip install pyinstaller
 powershell -ExecutionPolicy Bypass -File tools/prepare_airplay_windows.ps1
 powershell -ExecutionPolicy Bypass -File tools/build_airplay_windows_macast.ps1
+powershell -ExecutionPolicy Bypass -File tools/build_bluetooth_audio_backend.ps1
 pyinstaller --clean --noconfirm Macast.spec
 ```
 

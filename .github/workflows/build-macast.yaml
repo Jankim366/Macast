@@ -147,6 +147,7 @@ jobs:
           7z x -ogettext gettext.zip bin/msgfmt.exe
           powershell -ExecutionPolicy Bypass -File tools/prepare_airplay_windows.ps1
           powershell -ExecutionPolicy Bypass -File tools/build_airplay_windows_macast.ps1
+          powershell -ExecutionPolicy Bypass -File tools/build_bluetooth_audio_backend.ps1
 
       - name: Build
         id: compile
@@ -156,9 +157,9 @@ jobs:
           echo "DIST_EXE=Macast-Windows-v${VERSION}.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           echo "DIST_EXE_DEBUG=Macast-Windows-v${VERSION}-debug.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           echo "VERSION=v${VERSION}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          pyinstaller --noconfirm -F -w --additional-hooks-dir=. --add-data="macast/.version;." --add-data="macast/xml/*;macast/xml"  --add-data="i18n/zh_CN/LC_MESSAGES/*.mo;i18n/zh_CN/LC_MESSAGES" --add-data="macast/assets/*;macast/assets" --add-data="macast/assets/fonts/*;macast/assets/fonts" --add-data="bin/AirPlay-Windows;bin/AirPlay-Windows" --add-binary="bin/mpv.exe;bin" --add-binary="bin/d3dcompiler_43.dll;bin" --icon=macast/assets/icon.ico Macast.py
+          pyinstaller --noconfirm -F -w --additional-hooks-dir=. --add-data="macast/.version;." --add-data="macast/xml/*;macast/xml"  --add-data="i18n/zh_CN/LC_MESSAGES/*.mo;i18n/zh_CN/LC_MESSAGES" --add-data="macast/assets/*;macast/assets" --add-data="macast/assets/fonts/*;macast/assets/fonts" --add-data="bin/AirPlay-Windows;bin/AirPlay-Windows" --add-data="tools/bluetooth-audio-backend/LICENSE.audioplaybackconnector;licenses" --add-binary="bin/mpv.exe;bin" --add-binary="bin/d3dcompiler_43.dll;bin" --add-binary="bin/BluetoothAudio/macast-bluetooth-audio.exe;bin/BluetoothAudio" --icon=macast/assets/icon.ico Macast.py
           cp dist/Macast.exe Macast-Windows-v${VERSION}.exe
-          pyinstaller --noconfirm -F --additional-hooks-dir=. --add-data="macast/.version;." --add-data="macast/xml/*;macast/xml"  --add-data="i18n/zh_CN/LC_MESSAGES/*.mo;i18n/zh_CN/LC_MESSAGES" --add-data="macast/assets/*;macast/assets" --add-data="macast/assets/fonts/*;macast/assets/fonts" --add-data="bin/AirPlay-Windows;bin/AirPlay-Windows" --add-binary="bin/mpv.exe;bin" --add-binary="bin/d3dcompiler_43.dll;bin" --icon=macast/assets/icon.ico Macast.py
+          pyinstaller --noconfirm -F --additional-hooks-dir=. --add-data="macast/.version;." --add-data="macast/xml/*;macast/xml"  --add-data="i18n/zh_CN/LC_MESSAGES/*.mo;i18n/zh_CN/LC_MESSAGES" --add-data="macast/assets/*;macast/assets" --add-data="macast/assets/fonts/*;macast/assets/fonts" --add-data="bin/AirPlay-Windows;bin/AirPlay-Windows" --add-data="tools/bluetooth-audio-backend/LICENSE.audioplaybackconnector;licenses" --add-binary="bin/mpv.exe;bin" --add-binary="bin/d3dcompiler_43.dll;bin" --add-binary="bin/BluetoothAudio/macast-bluetooth-audio.exe;bin/BluetoothAudio" --icon=macast/assets/icon.ico Macast.py
           cp dist/Macast.exe Macast-Windows-v${VERSION}-debug.exe
           echo "::set-output name=status::success"
 

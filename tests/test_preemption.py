@@ -39,7 +39,10 @@ class PreemptionTests(unittest.TestCase):
         app, _, _ = self.app_with_protocol("http://example/song.mp3", "PLAYING")
         app.airplay_manager.media_state = {
             "control": True,
-            "rate": 1.0,
+            "rate": 0,
+            "title": "AirPlay Song",
+            "artist": "AirPlay Artist",
+            "duration_ms": 180000,
         }
         app.airplay_manager.send_media_command.return_value = True
 

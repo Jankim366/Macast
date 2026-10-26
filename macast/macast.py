@@ -587,14 +587,17 @@ class Macast(App):
         """The latest DLNA sender suspends or disconnects AirPlay."""
         self.cancel_airplay_resume()
         media = self.airplay_manager.media_state
-        if media.get("control") and media.get("rate", 0) > 0:
+        has_airplay_media = bool(
+            media.get("title") or media.get("artist") or
+            media.get("duration_ms", 0))
+        if media.get("control") and has_airplay_media:
             if self.airplay_manager.send_media_command("pause"):
                 with self.airplay_preemption_lock:
                     self.airplay_paused_by_dlna = True
-                logger.info("DLNA sender paused active AirPlay audio")
+                logger.warning("DLNA sender paused active AirPlay audio")
                 return
         if self.airplay_manager.send_media_command("preempt"):
-            logger.info(
+            logger.warning(
                 "DLNA sender preempted an active AirPlay session: %s",
                 uri)
 
@@ -632,7 +635,7 @@ class Macast(App):
         with self.airplay_preemption_lock:
             self.airplay_paused_by_dlna = False
         if success:
-            logger.info("AirPlay audio resumed after DLNA playback ended")
+            logger.warning("AirPlay audio resumed after DLNA playback ended")
         else:
             logger.warning(
                 "AirPlay audio could not resume after DLNA playback ended")

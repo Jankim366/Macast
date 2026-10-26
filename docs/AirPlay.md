@@ -74,8 +74,12 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
   Toggle Play/Pause, Next, Volume Up, Volume Down, and Toggle Mute.
 - Latest sender wins for simultaneous connections. A new AirPlay session
   disconnects the older AirPlay sender and stops active DLNA playback. A new
-  DLNA URI disconnects active AirPlay clients and replaces the current mpv
+  DLNA URI suspends or disconnects active AirPlay and replaces the current mpv
   item. The receiver is not rejected and the two protocols are never mixed.
+- When DLNA interrupts controllable AirPlay audio, Macast pauses that iPhone
+  session through DACP instead of tearing down the connection. After the
+  DLNA item stops, AirPlay playback resumes automatically. AirPlay mirroring
+  and senders without working DACP controls still use hard preemption.
 - Macast sends reverse controls with the sender-provided `DACP-ID` and
   `Active-Remote` token. Commands are only enabled when the sender exposes a
   usable DACP service. DACP discovery uses the native Windows service browser

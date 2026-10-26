@@ -104,8 +104,10 @@ This fork extends Macast with an independent
   media title and working Play/Pause control. The card is removed when DLNA
   playback becomes idle.
 - The latest sender wins. A new AirPlay device disconnects the previous
-  AirPlay session and stops DLNA; a new DLNA cast disconnects AirPlay and
-  replaces the current item. Multiple senders are never mixed.
+  AirPlay session and stops DLNA; a new DLNA cast suspends or disconnects
+  AirPlay and replaces the current item. Multiple senders are never mixed.
+- Controllable AirPlay audio is paused, rather than disconnected, when DLNA
+  takes over, so it can resume automatically when the DLNA item stops.
 - DACP services are discovered through the native Windows `_dacp._tcp.local`
   browser, including services registered after the AirPlay connection.
 - Audio logs its actual SDL/WASAPI endpoint. Remote-desktop and virtual

@@ -197,6 +197,8 @@ def create_airplay_process_manager(
 
 
 class Macast(App):
+    AIRPLAY_RESUME_DELAY = 2.0
+
     if sys.platform == 'win32':
         ICON_MAP = ['assets/icon.ico',
                     'assets/menu_light_large.png',
@@ -232,6 +234,9 @@ class Macast(App):
         self.airplay_show_menuitem = None
         self.airplay_now_playing_menuitem = None
         self.airplay_control_menuitems = []
+        self.airplay_preemption_lock = threading.RLock()
+        self.airplay_paused_by_dlna = False
+        self.airplay_resume_timer = None
 
         if airplay_manager is None:
             airplay_manager = create_airplay_process_manager(
@@ -552,6 +557,10 @@ class Macast(App):
         self.update_menu()
 
     def on_airplay_media_state_changed(self, media):
+        with self.airplay_preemption_lock:
+            paused_by_dlna = self.airplay_paused_by_dlna
+        if paused_by_dlna and not media.get("control"):
+            self.cancel_airplay_resume()
         if self.airplay_now_playing_menuitem is None:
             return
         self.airplay_now_playing_menuitem.text = \
@@ -561,6 +570,9 @@ class Macast(App):
 
     def on_airplay_session_started(self):
         """The latest AirPlay sender preempts any active DLNA playback."""
+        self.cancel_airplay_resume()
+        with self.airplay_preemption_lock:
+            self.airplay_paused_by_dlna = False
         protocol = self.service.protocol
         uri = protocol.get_state_url()
         transport = protocol.get_state_transport_state()
@@ -572,11 +584,58 @@ class Macast(App):
         cherrypy.engine.publish('renderer_av_stop')
 
     def on_dlna_cast_requested(self, uri):
-        """The latest DLNA sender disconnects any active AirPlay session."""
+        """The latest DLNA sender suspends or disconnects AirPlay."""
+        self.cancel_airplay_resume()
+        media = self.airplay_manager.media_state
+        if media.get("control") and media.get("rate", 0) > 0:
+            if self.airplay_manager.send_media_command("pause"):
+                with self.airplay_preemption_lock:
+                    self.airplay_paused_by_dlna = True
+                logger.info("DLNA sender paused active AirPlay audio")
+                return
         if self.airplay_manager.send_media_command("preempt"):
             logger.info(
                 "DLNA sender preempted an active AirPlay session: %s",
                 uri)
+
+    def cancel_airplay_resume(self):
+        with self.airplay_preemption_lock:
+            timer = self.airplay_resume_timer
+            self.airplay_resume_timer = None
+            if timer is not None:
+                timer.cancel()
+
+    def schedule_airplay_resume(self):
+        with self.airplay_preemption_lock:
+            if not self.airplay_paused_by_dlna:
+                return
+            if self.airplay_resume_timer is not None:
+                self.airplay_resume_timer.cancel()
+            timer = threading.Timer(
+                self.AIRPLAY_RESUME_DELAY,
+                self.resume_airplay_after_dlna)
+            timer.daemon = True
+            self.airplay_resume_timer = timer
+            timer.start()
+
+    def resume_airplay_after_dlna(self):
+        with self.airplay_preemption_lock:
+            self.airplay_resume_timer = None
+            if not self.airplay_paused_by_dlna:
+                return
+        success = False
+        for _ in range(2):
+            if self.airplay_manager.send_media_command("play"):
+                success = True
+                break
+            time.sleep(0.5)
+        with self.airplay_preemption_lock:
+            self.airplay_paused_by_dlna = False
+        if success:
+            logger.info("AirPlay audio resumed after DLNA playback ended")
+        else:
+            logger.warning(
+                "AirPlay audio could not resume after DLNA playback ended")
 
     def update_airplay_media_controls(self, media=None):
         media = media or self.airplay_manager.media_state
@@ -658,6 +717,7 @@ class Macast(App):
 
     def renderer_av_stop(self):
         logger.info("renderer_av_stop")
+        self.schedule_airplay_resume()
         if self.copy_menuitem:
             self.remove_menu_item_by_id(self.copy_menuitem.id)
         self.copy_menuitem = None

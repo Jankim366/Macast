@@ -130,6 +130,7 @@ class AirPlayProcessManagerTests(unittest.TestCase):
                 self.assertEqual(
                     os.path.normcase(stream.read()),
                     os.path.normcase(os.path.abspath(directory)))
+            self.assertTrue(manager.stop())
 
     def test_media_state_file_is_parsed(self):
         with tempfile.TemporaryDirectory() as directory:

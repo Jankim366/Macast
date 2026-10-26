@@ -1,0 +1,278 @@
+diff --git a/src/net/tcp_server.h b/src/net/tcp_server.h
+index 8ecbdba..5d34cc5 100644
+--- a/src/net/tcp_server.h
++++ b/src/net/tcp_server.h
+@@ -40,6 +40,12 @@ public:
+     // thread; stop()/close_all_clients() are serialized by the caller.
+     void close_all_clients(const std::function<void()>& on_drained = {});
+ 
++    // Close every active client except keep_fd. This is used when a newer
++    // AirPlay sender takes over while its own SETUP request is in flight.
++    void close_clients_except(
++        socket_t keep_fd,
++        const std::function<void()>& on_drained = {});
++
+     uint16_t port() const { return port_; }
+ 
+ private:
+diff --git a/src/net/tcp_server.cpp b/src/net/tcp_server.cpp
+index dfda525..bb04ad8 100644
+--- a/src/net/tcp_server.cpp
++++ b/src/net/tcp_server.cpp
+@@ -204,4 +204,30 @@ void TcpServer::close_all_clients(const std::function<void()>& on_drained) {
+     disconnecting_ = false;
+ }
+ 
++void TcpServer::close_clients_except(
++        socket_t keep_fd, const std::function<void()>& on_drained) {
++    std::unique_lock<std::mutex> lock(clients_mtx_);
++    disconnecting_ = true;
++    std::size_t closed = 0;
++    for (const auto& [fd, cancelled] : active_clients_) {
++        if (fd == keep_fd) continue;
++        cancelled->store(true);
++#if defined(_WIN32)
++        ::shutdown(fd, SD_BOTH);
++#else
++        ::shutdown(fd, SHUT_RDWR);
++#endif
++        ++closed;
++    }
++    LOG_INFO << "TCP server: preempting " << closed
++             << " older client(s); keeping fd=" << keep_fd;
++    clients_cv_.wait(lock, [this, keep_fd] {
++        const auto keep_count = active_clients_.count(keep_fd);
++        return active_clients_.size() <=
++            static_cast<std::size_t>(keep_count ? 1 : 0);
++    });
++    if (on_drained) on_drained();
++    disconnecting_ = false;
++}
++
+ } // namespace ap::net
+diff --git a/src/airplay/client_session.h b/src/airplay/client_session.h
+index ba3fc32..f068a89 100644
+--- a/src/airplay/client_session.h
++++ b/src/airplay/client_session.h
+@@ -5,6 +5,7 @@
+ #include "crypto/fairplay.h"
+ #include "crypto/pair_verify.h"
+ 
++#include <functional>
+ #include <memory>
+ 
+ namespace ap::crypto { class Identity; }
+@@ -58,6 +59,10 @@ struct ClientSession {
+     // takes effect on the next iPhone handshake.
+     bool mirror_hwaccel{true};
+ 
++    // Called when a different sender starts SETUP. The server closes the
++    // older control/media clients and drains their stream teardown first.
++    std::function<void()> preempt_other_clients;
++
+     // Non-owning pointer to the shared user-tunable settings (set
+     // when the renderer's UI exposes runtime knobs). May be null on
+     // a headless build. Same lifetime as DeviceContext::live.
+diff --git a/src/airplay/server.cpp b/src/airplay/server.cpp
+index 08574af..d8a423e 100644
+--- a/src/airplay/server.cpp
++++ b/src/airplay/server.cpp
+@@ -82,6 +82,16 @@ void Server::handle_client(ap::net::ClientSocket client) {
+                           static_cast<int>(client.fd), ctx_.renderer,
+                           ctx_.mirror_hwaccel);
+     session.live = ctx_.live;
++    session.preempt_other_clients = [this, fd = client.fd] {
++        tcp_.close_clients_except(fd, [this] {
++            if (ctx_.hls_player) ctx_.hls_player->stop();
++            HlsSessionRegistry::instance().set_active_session("");
++            if (ctx_.renderer) {
++                ctx_.renderer->clear_session();
++                ctx_.renderer->clear_active_device();
++            }
++        });
++    };
+ 
+     while (reader.read(client.fd, req)) {
+         if (req.method == "SETUP" || req.method == "ANNOUNCE" || req.method == "RECORD") {
+diff --git a/src/airplay/routes.cpp b/src/airplay/routes.cpp
+index 6f57a84..e6aecbd 100644
+--- a/src/airplay/routes.cpp
++++ b/src/airplay/routes.cpp
+@@ -289,34 +289,25 @@ Response setup_airplay2_path(ClientSession& session, const Request& req) {
+         return r;
+     }
+ 
+-    // Single-device guard: if THIS ClientSession hasn't created its
+-    // StreamSession yet (first SETUP from this iPhone) but the
+-    // VideoRenderer already shows a paired device, another iPhone
+-    // is currently mirroring. Refuse the new SETUP cleanly with
+-    // 503 Service Unavailable so iOS gives up instead of feeding
+-    // a second video stream into the shared frame buffer (which
+-    // would interleave the two streams and corrupt both).
+-    //
+-    // Same-peer-ip is treated as a legitimate reconnection (network
+-    // blip, app restart) and allowed through — the previous session
+-    // will be torn down by ClientSession destruction when its TCP
+-    // socket closes.
++    // Last sender wins. If another device already owns the receiver,
++    // disconnect and drain that older AirPlay session before the new
++    // SETUP creates its StreamSession. This avoids both mixed audio and
++    // interleaved mirror frames while never rejecting the newest sender.
++    // Same-peer-ip is still treated as a normal reconnection.
+     if (!session.streams && session.renderer) {
+         ap::video::VideoRenderer::DeviceInfo existing;
+         if (session.renderer->active_device_snapshot(existing) &&
+             !existing.peer_ip.empty() &&
+             existing.peer_ip != session.remote_ip) {
+-            r.status_code = 503;
+-            r.status_text = "Service Unavailable";
+-            r.set_header("Connection", "close");
+-            LOG_WARN << "airplay2 SETUP refused: receiver already paired"
+-                     << " with " << (existing.name.empty()
+-                                       ? existing.peer_ip
+-                                       : existing.name)
++            LOG_INFO << "airplay2 SETUP preempting receiver owner "
++                     << (existing.name.empty()
++                            ? existing.peer_ip : existing.name)
+                      << " (" << existing.kind << ", sid="
+-                     << existing.session_id << ") — second iPhone "
+-                     << "from " << session.remote_ip << " rejected";
+-            return r;
++                     << existing.session_id << ") for newer sender "
++                     << session.remote_ip;
++            if (session.preempt_other_clients) {
++                session.preempt_other_clients();
++            }
+         }
+     }
+ 
+diff --git a/src/airplay/media_control.h b/src/airplay/media_control.h
+index 2dd9f82..69fd80b 100644
+--- a/src/airplay/media_control.h
++++ b/src/airplay/media_control.h
+@@ -12,5 +12,6 @@ enum class MediaCommand {
+     VolumeDown,
+     MuteToggle,
+     Seek,
++    Preempt,
+ };
+ }
+diff --git a/src/platform/macast_bridge.cpp b/src/platform/macast_bridge.cpp
+index 24ae4aa..a80ce68 100644
+--- a/src/platform/macast_bridge.cpp
++++ b/src/platform/macast_bridge.cpp
+@@ -52,6 +52,8 @@ bool parse_command(const std::string& line,
+         command = ap::airplay::MediaCommand::VolumeDown;
+     } else if (line == "mutetoggle") {
+         command = ap::airplay::MediaCommand::MuteToggle;
++    } else if (line == "preempt") {
++        command = ap::airplay::MediaCommand::Preempt;
+     } else if (line.rfind("seek:", 0) == 0) {
+         try {
+             position_ms = static_cast<uint32_t>(
+diff --git a/src/main.cpp b/src/main.cpp
+index 71c0f07..d5f5675 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -315,6 +315,10 @@ int main(int argc, char** argv) {
+     std::optional<AudioRequest> audio_request;
+     auto enqueue_audio_request =
+         [&](ap::airplay::MediaCommand command, uint32_t position) -> bool {
++        if (command == ap::airplay::MediaCommand::Preempt) {
++            disconnect_requested.store(true);
++            return true;
++        }
+         ap::video::VideoRenderer::DeviceInfo device;
+         renderer.active_device_snapshot(device);
+         std::lock_guard<std::mutex> lock(audio_request_mutex);
+diff --git a/tools/test_shutdown.cpp b/tools/test_shutdown.cpp
+index 4bdf19b..b79e921 100644
+--- a/tools/test_shutdown.cpp
++++ b/tools/test_shutdown.cpp
+@@ -10,8 +10,10 @@
+ #include <atomic>
+ #include <cerrno>
+ #include <chrono>
++#include <condition_variable>
+ #include <cstdlib>
+ #include <iostream>
++#include <mutex>
+ #include <thread>
+ #include <vector>
+ #if defined(_WIN32)
+@@ -189,6 +191,67 @@ void test_blocked_send() {
+     ap::net::close_socket(client);
+     std::cout << "PASS: stop interrupts blocked send\n";
+ }
++
++void test_preemption_keeps_newest_client() {
++    ap::net::TcpServer server;
++    std::mutex sockets_mutex;
++    std::condition_variable sockets_cv;
++    std::vector<socket_t> server_sockets;
++    std::atomic<int> cleaned{0};
++    require(server.start(0, [&](ap::net::ClientSocket client) {
++        {
++            std::lock_guard<std::mutex> lock(sockets_mutex);
++            server_sockets.push_back(client.fd);
++            sockets_cv.notify_all();
++        }
++        ap::airplay::RequestReader reader(client.cancelled);
++        ap::airplay::Request request;
++        while (reader.read(client.fd, request)) {
++            require(ap::net::send_all(client.fd, "OK\n", 3) == 3,
++                    "kept peer response");
++        }
++        ++cleaned;
++    }), "preemption server start");
++
++    auto older = connect_to(server.port());
++    wait_for([&] {
++        std::lock_guard<std::mutex> lock(sockets_mutex);
++        return server_sockets.size() == 1;
++    });
++    auto newest = connect_to(server.port());
++    wait_for([&] {
++        std::lock_guard<std::mutex> lock(sockets_mutex);
++        return server_sockets.size() == 2;
++    });
++
++    socket_t keep_fd;
++    {
++        std::lock_guard<std::mutex> lock(sockets_mutex);
++        keep_fd = server_sockets[1];
++    }
++    bool drained = false;
++    server.close_clients_except(keep_fd, [&] {
++        require(cleaned == 1,
++                "older client teardown completes before preemption callback");
++        drained = true;
++    });
++    require(drained, "preemption drain callback");
++    check_closed(older);
++
++    const std::string request =
++        "OPTIONS / RTSP/1.0\r\nContent-Length: 0\r\n\r\n";
++    require(ap::net::send_all(
++                newest, request.data(), static_cast<int>(request.size())) > 0,
++            "newest client survives preemption");
++    char reply[3];
++    require(ap::net::recv_all(newest, reply, 3) == 3,
++            "newest client remains usable");
++
++    server.stop();
++    check_closed(newest);
++    require(cleaned == 2, "all preemption workers are joined");
++    std::cout << "PASS: newest client preempts and drains older peer\n";
++}
+ #if defined(_WIN32)
+ struct DnsCompletion {
+     std::mutex mutex;
+@@ -298,6 +361,7 @@ int main(int argc, char** argv) {
+     test_keepalive_and_reset();
+     test_completed_workers();
+     test_blocked_send();
++    test_preemption_keeps_newest_client();
+     if (argc > 1 && std::string(argv[1]) == "--mdns") test_mdns();
+ #if defined(_WIN32)
+     if (argc > 1 && std::string(argv[1]) == "--dacp") test_dacp();

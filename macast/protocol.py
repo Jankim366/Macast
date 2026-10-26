@@ -682,6 +682,7 @@ class DLNAProtocol(Protocol):
     def AVTransport_SetAVTransportURI(self, data):
         uri = data['CurrentURI'].value
         logger.info(uri)
+        cherrypy.engine.publish('dlna_cast_requested', uri)
         self.set_state_url(uri)
         self.renderer.set_media_url(uri)
         title = Setting.get_friendly_name()

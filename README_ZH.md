@@ -127,6 +127,9 @@ AirPlay 屏幕镜像与音频接收进程的部署、配置和验证方式见
   `ms-resource:AppName` 的通用媒体播放器卡片。
 - Windows 通过 DLNA 播放媒体时，会显示当前媒体名称和可用的播放/暂停按钮；
   DLNA 空闲后媒体卡片自动消失。
+- 多设备、多协议采用“最后投放者优先”：新 AirPlay 设备会断开上一台
+  AirPlay，并停止正在播放的 DLNA；新的 DLNA 投放会断开 AirPlay，并替换
+  当前媒体。不会拒绝最新设备，也不会把多路声音混在一起播放。
 - AirPlay 音频会记录实际使用的 SDL/WASAPI 输出设备。若 Windows 默认输出
   是 `ToDesk Virtual Audio`、`RemoteControl Virtual Audio` 或网易虚拟声卡，
   接收器会优先切换到可用的本地扬声器；也可通过环境变量

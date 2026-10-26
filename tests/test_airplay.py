@@ -206,6 +206,18 @@ class AirPlayProcessManagerTests(unittest.TestCase):
                 manager.normalize_receiver_name("Macast.Test\\Room"),
                 "MacastTestRoom")
 
+    def test_airplay_session_start_is_reported_for_preemption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = os.path.join(directory, "airplay.log")
+            manager = self.manager(log_path=log_path)
+            with open(log_path, "a", encoding="utf-8") as stream:
+                stream.write(
+                    "=== AirPlay session START: Phone B "
+                    "(iPhone16,1) 192.168.1.3 ===\n")
+
+            self.assertTrue(manager._read_mirror_events_locked())
+            self.assertFalse(manager._read_mirror_events_locked())
+
     def test_mdns_registration_marks_startup_ready(self):
         with tempfile.TemporaryDirectory() as directory:
             log_path = os.path.join(directory, "airplay.log")

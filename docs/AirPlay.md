@@ -72,6 +72,10 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
   availability, and DACP control availability.
 - The original Macast AirPlay submenu exposes Previous, Play, Pause,
   Toggle Play/Pause, Next, Volume Up, Volume Down, and Toggle Mute.
+- Latest sender wins for simultaneous connections. A new AirPlay session
+  disconnects the older AirPlay sender and stops active DLNA playback. A new
+  DLNA URI disconnects active AirPlay clients and replaces the current mpv
+  item. The receiver is not rejected and the two protocols are never mixed.
 - Macast sends reverse controls with the sender-provided `DACP-ID` and
   `Active-Remote` token. Commands are only enabled when the sender exposes a
   usable DACP service. DACP discovery uses the native Windows service browser

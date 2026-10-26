@@ -46,6 +46,22 @@ if (-not $alreadyApplied) {
 Copy-Item -Path (Join-Path $PSScriptRoot "airplay-windows-overlay\*") `
     -Destination $SourceDirectory -Recurse -Force
 
+$preemptionPatch = Join-Path $PSScriptRoot "airplay-windows-preemption.patch"
+$previousErrorPreference = $ErrorActionPreference
+$ErrorActionPreference = "SilentlyContinue"
+git -C $SourceDirectory apply --recount --reverse --check $preemptionPatch 2>&1 |
+    Out-Null
+$preemptionApplied = $LASTEXITCODE -eq 0
+$ErrorActionPreference = $previousErrorPreference
+if (-not $preemptionApplied) {
+    git -C $SourceDirectory apply --recount $preemptionPatch
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to apply airplay-windows-preemption.patch."
+    }
+} else {
+    Write-Host "airplay-windows-preemption.patch is already applied."
+}
+
 if (-not (Test-Path -LiteralPath (Join-Path $VcpkgDirectory ".git"))) {
     git clone --filter=blob:none https://github.com/microsoft/vcpkg.git $VcpkgDirectory
 }

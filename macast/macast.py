@@ -164,7 +164,8 @@ class MacastPluginManager:
             open(init_file_path, 'a').close()
 
 
-def create_airplay_process_manager(status_callback=None, media_callback=None):
+def create_airplay_process_manager(
+        status_callback=None, media_callback=None, session_callback=None):
     configured_path = Setting.get(SettingProperty.AirPlayExecutable, '')
     auto_restart = bool(Setting.get(SettingProperty.AirPlayAutoRestart, 1))
     extra_arguments = Setting.get(SettingProperty.AirPlayExtraArguments, [])
@@ -190,6 +191,7 @@ def create_airplay_process_manager(status_callback=None, media_callback=None):
         hide_until_mirror=hide_windows_ui,
         require_macast_window=True,
         media_callback=media_callback,
+        session_callback=session_callback,
         status_callback=status_callback,
         env=Setting.get_system_env())
 
@@ -234,10 +236,12 @@ class Macast(App):
         if airplay_manager is None:
             airplay_manager = create_airplay_process_manager(
                 self.on_airplay_status_changed,
-                self.on_airplay_media_state_changed)
+                self.on_airplay_media_state_changed,
+                self.on_airplay_session_started)
         else:
             airplay_manager.status_callback = self.on_airplay_status_changed
             airplay_manager.media_callback = self.on_airplay_media_state_changed
+            airplay_manager.session_callback = self.on_airplay_session_started
         self.airplay_manager = airplay_manager
 
         self.plugin_manager = MacastPluginManager(
@@ -271,6 +275,8 @@ class Macast(App):
         cherrypy.engine.subscribe('renderer_start', self.renderer_start)
         cherrypy.engine.subscribe('renderer_av_stop', self.renderer_av_stop)
         cherrypy.engine.subscribe('renderer_av_uri', self.renderer_av_uri)
+        cherrypy.engine.subscribe(
+            'dlna_cast_requested', self.on_dlna_cast_requested)
         cherrypy.engine.subscribe('ssdp_update_ip', self.update_service_ip)
         cherrypy.engine.subscribe('app_notify', self.notification)
         self.start_cast()
@@ -552,6 +558,25 @@ class Macast(App):
             self.get_airplay_now_playing_text(media)
         self.update_airplay_media_controls(media)
         self.update_menu()
+
+    def on_airplay_session_started(self):
+        """The latest AirPlay sender preempts any active DLNA playback."""
+        protocol = self.service.protocol
+        uri = protocol.get_state_url()
+        transport = protocol.get_state_transport_state()
+        if not uri or transport in ("STOPPED", "NO_MEDIA_PRESENT"):
+            return
+        logger.info("AirPlay sender preempted active DLNA playback")
+        self.service.renderer.set_media_stop()
+        protocol.set_state_stop()
+        cherrypy.engine.publish('renderer_av_stop')
+
+    def on_dlna_cast_requested(self, uri):
+        """The latest DLNA sender disconnects any active AirPlay session."""
+        if self.airplay_manager.send_media_command("preempt"):
+            logger.info(
+                "DLNA sender preempted an active AirPlay session: %s",
+                uri)
 
     def update_airplay_media_controls(self, media=None):
         media = media or self.airplay_manager.media_state

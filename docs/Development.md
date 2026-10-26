@@ -37,9 +37,12 @@ open dist
 
 ```powershell
 $client = new-object System.Net.WebClient
-$client.DownloadFile('https://nchc.dl.sourceforge.net/project/mpv-player-windows/stable/mpv-0.33.0-x86_64.7z','mpv.7z')
-7z x -obin mpv.7z *.exe
+$client.DownloadFile('https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261021/mpv-x86_64-20261021-git-e471496c56.7z','mpv.7z')
+7z x -obin mpv.7z mpv.exe d3dcompiler_43.dll
 ```
+
+This build includes mpv's Windows System Media Transport Controls support.
+Bundling mpv 0.34 would not expose DLNA playback in the Windows media panel.
 
 ### 2. debug
 
@@ -54,7 +57,7 @@ python Macast.py
 pip install pyinstaller
 powershell -ExecutionPolicy Bypass -File tools/prepare_airplay_windows.ps1
 powershell -ExecutionPolicy Bypass -File tools/build_airplay_windows_macast.ps1
-pyinstaller --noconfirm -F -w --additional-hooks-dir=. --add-data=".version;." --add-data="macast/xml/*;macast/xml"  --add-data="i18n/zh_CN/LC_MESSAGES/*.mo;i18n/zh_CN/LC_MESSAGES" --add-data="assets/*;assets" --add-data="bin/AirPlay-Windows;bin/AirPlay-Windows" --add-binary="bin/mpv.exe;bin" --icon=assets/icon.ico Macast.py
+pyinstaller --clean --noconfirm Macast.spec
 ```
 
 

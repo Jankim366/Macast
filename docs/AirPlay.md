@@ -81,9 +81,14 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
   explicit `Jankim366.Macast.AirPlay` AppUserModelID, shows the current title,
   artist and album, and exposes previous, play/pause and next controls only
   when DACP is reachable.
-- On Windows, mpv media-key integration is disabled at launch so an idle DLNA
-  renderer cannot leave a stale generic `ms-resource:AppName` media card next
-  to the AirPlay card.
+- On Windows, the bundled mpv publishes its own SMTC card while DLNA media is
+  playing. The card exposes the current title and Play/Pause control. mpv is
+  idle when Macast is not casting, so it does not leave a stale DLNA card next
+  to the AirPlay card. Global media-key routing stays with Windows and other
+  applications.
+- The Windows package uses `mpv-x86_64-20261021-git-e471496c56.7z`
+  (`mpv v0.41.0-1227-ge471496c5`). mpv 0.34 does not contain the Windows SMTC
+  implementation required for the DLNA media card.
 - The audio sink logs the SDL driver and selected endpoint. Remote-desktop and
   obviously virtual output endpoints are skipped when a local playback device
   is available. Set `MACAST_AIRPLAY_AUDIO_DEVICE` to the exact endpoint name

@@ -100,6 +100,9 @@ This fork extends Macast with an independent
   Down, and Toggle Mute.
 - Windows also shows a `Macast AirPlay` system media card with the current
   title, artist, timeline, and working Previous/Pause-or-Play/Next controls.
+- Windows DLNA playback publishes an mpv system media card with the current
+  media title and working Play/Pause control. The card is removed when DLNA
+  playback becomes idle.
 - DACP services are discovered through the native Windows `_dacp._tcp.local`
   browser, including services registered after the AirPlay connection.
 - Audio logs its actual SDL/WASAPI endpoint. Remote-desktop and virtual

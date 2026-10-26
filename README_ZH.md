@@ -125,6 +125,8 @@ AirPlay 屏幕镜像与音频接收进程的部署、配置和验证方式见
 - Windows 系统媒体卡片会显示 `Macast AirPlay`、歌曲名、歌手，以及可用的
   上一首、暂停/播放和下一首按钮；不会再显示
   `ms-resource:AppName` 的通用媒体播放器卡片。
+- Windows 通过 DLNA 播放媒体时，会显示当前媒体名称和可用的播放/暂停按钮；
+  DLNA 空闲后媒体卡片自动消失。
 - AirPlay 音频会记录实际使用的 SDL/WASAPI 输出设备。若 Windows 默认输出
   是 `ToDesk Virtual Audio`、`RemoteControl Virtual Audio` 或网易虚拟声卡，
   接收器会优先切换到可用的本地扬声器；也可通过环境变量

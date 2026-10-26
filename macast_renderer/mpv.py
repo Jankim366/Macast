@@ -27,6 +27,11 @@ if os.name == 'nt':
 logger = logging.getLogger("MPVRenderer")
 logger.setLevel(logging.INFO)
 
+WINDOWS_MEDIA_CONTROL_PARAMETERS = (
+    '--media-controls=yes',
+    '--input-media-keys=no',
+)
+
 
 class ObserveProperty(Enum):
     volume = 1
@@ -106,14 +111,26 @@ class MPVRenderer(Renderer):
                                   default=SettingProperty.PlayerSize_Normal.value)
         if player_size == SettingProperty.PlayerSize_FullScreen.value:
             options['fullscreen'] = 'yes'
-        self.send_command(['loadfile', url, 'replace',
-                           ','.join([f'{i}={options[i]}' for i in options])])
+        self.send_command(self.build_loadfile_command(url, options))
+
+    @staticmethod
+    def build_loadfile_command(url, options):
+        option_list = ','.join(
+            f'{name}={value}' for name, value in options.items())
+        if sys.platform == 'win32':
+            # mpv 0.41 inserts playlist index before loadfile options.
+            return ['loadfile', url, 'replace', '-1', option_list]
+        return ['loadfile', url, 'replace', option_list]
 
     def set_media_title(self, data):
         """ data : string
         """
         self.title = data
         self.send_command(['set_property', 'title', data])
+        if sys.platform == 'win32':
+            # mpv SMTC publishes media-title, which is not changed by mpv's
+            # window-title property.
+            self.send_command(['set_property', 'force-media-title', data])
 
     def set_media_position(self, data):
         """ data : position, 00:00:00
@@ -389,11 +406,9 @@ class MPVRenderer(Renderer):
                     '--macos-app-activation-policy=accessory',
                 ]
             elif sys.platform == 'win32':
-                # AirPlay publishes its own Windows media card. Keeping mpv
-                # out of SMTC prevents an idle renderer from leaving a stale
-                # "ms-resource:AppName / Media Player" entry beside it.
-                params.append('--input-media-keys=no')
-
+                # Expose DLNA playback through Windows SMTC while leaving
+                # global media-key routing to Windows and other applications.
+                params.extend(WINDOWS_MEDIA_CONTROL_PARAMETERS)
             # set hardware
             hw = Setting.get(SettingProperty.PlayerHW,
                              default=SettingProperty.PlayerHW_Enable.value)
@@ -468,7 +483,8 @@ class MPVRenderer(Renderer):
             if len(protocols) > 0:
                 protocol = protocols.pop()
                 position = protocol.get_state_position()
-                self.send_command(['loadfile', uri, 'replace', f'start={position}'])
+                self.send_command(self.build_loadfile_command(
+                    uri, {'start': position}))
             else:
                 self.send_command(['loadfile', uri, 'replace'])
             self.send_command(['set_property', 'title', self.title])

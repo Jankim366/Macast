@@ -627,8 +627,8 @@ class Macast(App):
             if not self.airplay_paused_by_dlna:
                 return
         success = False
-        for _ in range(2):
-            if self.airplay_manager.send_media_command("play"):
+        for command in ("play", "playpause", "play"):
+            if self.airplay_manager.send_media_command(command):
                 success = True
                 break
             time.sleep(0.5)

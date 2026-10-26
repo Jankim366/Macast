@@ -51,8 +51,12 @@ class PreemptionTests(unittest.TestCase):
         app.airplay_manager.send_media_command.assert_called_once_with("pause")
 
         app.airplay_manager.send_media_command.reset_mock()
+        app.airplay_manager.send_media_command.side_effect = [False, True]
         app.resume_airplay_after_dlna()
-        app.airplay_manager.send_media_command.assert_called_once_with("play")
+        app.airplay_manager.send_media_command.assert_has_calls([
+            mock.call("play"),
+            mock.call("playpause"),
+        ])
         self.assertFalse(app.airplay_paused_by_dlna)
 
     def test_airplay_session_stops_active_dlna(self):

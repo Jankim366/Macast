@@ -36,6 +36,14 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
   `Setting.get_friendly_name()` value. iOS and macOS therefore advertise the
   same `Macast(...)` name used by Macast's DLNA service instead of
   `AirPlay-Windows`.
+- AirPlay audio metadata is forwarded to Macast through a local named pipe and
+  state file: title, artist, album, elapsed/total time, playback rate, cover
+  availability, and DACP control availability.
+- The original Macast AirPlay submenu exposes Previous, Play, Pause,
+  Toggle Play/Pause, Next, Volume Up, Volume Down, and Toggle Mute.
+- Macast sends reverse controls with the sender-provided `DACP-ID` and
+  `Active-Remote` token. Commands are only enabled when the sender exposes a
+  usable DACP service.
 - `Start Cast` controls the DLNA service. It does not stop the independent
   AirPlay receiver.
 - A normal AirPlay-Windows exit is not restarted. A non-zero exit is retried at
@@ -193,6 +201,9 @@ sufficient because AirPlay-Windows also loads SDL2 and FFmpeg DLLs.
 - AirPlay-Windows supports one active sender session at a time.
 - DRM-protected video is not supported.
 - Experimental HLS direct playback is not enabled by Macast by default.
+- DACP metadata/control support depends on the sender app. Lyrics, the complete
+  playlist, and next-track preview are not normally exposed.
+- Seeking is implemented but may be rejected by some iOS sender versions.
 - AirPlay-Windows is a new project. Macast pins v0.4.1 instead of following its
   latest release automatically.
 - AirPlay-Windows is GPL-3.0, but its third-party notices state that the bundled

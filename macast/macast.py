@@ -164,7 +164,7 @@ class MacastPluginManager:
             open(init_file_path, 'a').close()
 
 
-def create_airplay_process_manager(status_callback=None):
+def create_airplay_process_manager(status_callback=None, media_callback=None):
     configured_path = Setting.get(SettingProperty.AirPlayExecutable, '')
     auto_restart = bool(Setting.get(SettingProperty.AirPlayAutoRestart, 1))
     extra_arguments = Setting.get(SettingProperty.AirPlayExtraArguments, [])
@@ -189,6 +189,7 @@ def create_airplay_process_manager(status_callback=None):
         auto_restart=auto_restart,
         hide_until_mirror=hide_windows_ui,
         require_macast_window=True,
+        media_callback=media_callback,
         status_callback=status_callback,
         env=Setting.get_system_env())
 
@@ -227,12 +228,16 @@ class Macast(App):
         self.airplay_toggle_menuitem = None
         self.airplay_restart_menuitem = None
         self.airplay_show_menuitem = None
+        self.airplay_now_playing_menuitem = None
+        self.airplay_control_menuitems = []
 
         if airplay_manager is None:
             airplay_manager = create_airplay_process_manager(
-                self.on_airplay_status_changed)
+                self.on_airplay_status_changed,
+                self.on_airplay_media_state_changed)
         else:
             airplay_manager.status_callback = self.on_airplay_status_changed
+            airplay_manager.media_callback = self.on_airplay_media_state_changed
         self.airplay_manager = airplay_manager
 
         self.plugin_manager = MacastPluginManager(
@@ -379,8 +384,13 @@ class Macast(App):
                [None, self.check_update_menuitem, self.about_menuitem]
 
     def build_airplay_menu(self):
+        media = self.airplay_manager.media_state
+        controls_enabled = self.is_airplay_active() and media.get("control")
         self.airplay_status_menuitem = MenuItem(
             self.get_airplay_status_text(),
+            enabled=False)
+        self.airplay_now_playing_menuitem = MenuItem(
+            self.get_airplay_now_playing_text(media),
             enabled=False)
         self.airplay_toggle_menuitem = MenuItem(
             self.get_airplay_toggle_text(),
@@ -394,12 +404,56 @@ class Macast(App):
             self.on_airplay_show_click,
             enabled=(self.airplay_manager.is_running()
                      and sys.platform == 'win32'))
+        media_items = [
+            MenuItem(_("Previous Track"), self.on_airplay_media_click,
+                     enabled=controls_enabled, data="previtem"),
+            MenuItem(_("Play"), self.on_airplay_media_click,
+                     enabled=controls_enabled, data="play"),
+            MenuItem(_("Pause"), self.on_airplay_media_click,
+                     enabled=controls_enabled, data="pause"),
+            MenuItem(_("Toggle Play/Pause"), self.on_airplay_media_click,
+                     enabled=controls_enabled, data="playpause"),
+            MenuItem(_("Next Track"), self.on_airplay_media_click,
+                     enabled=controls_enabled, data="nextitem"),
+            MenuItem(_("Volume Up"), self.on_airplay_media_click,
+                     enabled=controls_enabled, data="volumeup"),
+            MenuItem(_("Volume Down"), self.on_airplay_media_click,
+                     enabled=controls_enabled, data="volumedown"),
+            MenuItem(_("Toggle Mute"), self.on_airplay_media_click,
+                     enabled=controls_enabled, data="mutetoggle"),
+        ]
+        self.airplay_control_menuitems = media_items
         return [
             self.airplay_status_menuitem,
+            self.airplay_now_playing_menuitem,
+            None,
             self.airplay_toggle_menuitem,
             self.airplay_restart_menuitem,
             self.airplay_show_menuitem,
-        ]
+            None,
+        ] + media_items
+
+    def get_airplay_now_playing_text(self, media=None):
+        media = media or self.airplay_manager.media_state
+        title = media.get("title", "").strip()
+        artist = media.get("artist", "").strip()
+        if not title and not artist:
+            return _("AirPlay: No audio metadata")
+        text = title
+        if artist:
+            text = "{} — {}".format(text, artist) if text else artist
+        duration_ms = int(media.get("duration_ms", 0))
+        elapsed_ms = int(media.get("elapsed_ms", 0))
+        if duration_ms > 0:
+            text = "{}  [{}/{}]".format(
+                text, self.format_media_time(elapsed_ms),
+                self.format_media_time(duration_ms))
+        return text
+
+    @staticmethod
+    def format_media_time(milliseconds):
+        seconds = max(0, int(milliseconds) // 1000)
+        return "{}:{:02d}".format(seconds // 60, seconds % 60)
 
     def get_airplay_status_text(self):
         state_labels = {
@@ -488,7 +542,22 @@ class Macast(App):
         self.airplay_toggle_menuitem.text = self.get_airplay_toggle_text()
         self.airplay_restart_menuitem.enabled = running
         self.airplay_show_menuitem.enabled = running and sys.platform == 'win32'
+        self.update_airplay_media_controls()
         self.update_menu()
+
+    def on_airplay_media_state_changed(self, media):
+        if self.airplay_now_playing_menuitem is None:
+            return
+        self.airplay_now_playing_menuitem.text = \
+            self.get_airplay_now_playing_text(media)
+        self.update_airplay_media_controls(media)
+        self.update_menu()
+
+    def update_airplay_media_controls(self, media=None):
+        media = media or self.airplay_manager.media_state
+        enabled = self.is_airplay_active() and bool(media.get("control"))
+        for item in self.airplay_control_menuitems:
+            item.enabled = enabled
 
     def start_airplay(self, auto=False):
         if self.airplay_manager.start():
@@ -639,6 +708,12 @@ class Macast(App):
             self.notification(
                 _("AirPlay"),
                 _("The AirPlay receiver window cannot be shown here."))
+
+    def on_airplay_media_click(self, item):
+        if not self.airplay_manager.send_media_command(item.data):
+            self.notification(
+                _("AirPlay"),
+                _("AirPlay media control is unavailable."))
 
     def on_menubar_icon_change_click(self, item):
         for i in self.menubar_icon_menuitem.items():

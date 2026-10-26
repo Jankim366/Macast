@@ -23,14 +23,17 @@ git -C $SourceDirectory checkout $Version
 
 Copy-Item -LiteralPath (Join-Path $repoRoot "macast\assets\icon.ico") `
     -Destination (Join-Path $SourceDirectory "src\macast.ico") -Force
+Copy-Item -Path (Join-Path $PSScriptRoot "airplay-windows-overlay\*") `
+    -Destination $SourceDirectory -Recurse -Force
 
 foreach ($patchName in @(
         "airplay-windows-macast.patch",
-        "airplay-windows-icon.patch")) {
+        "airplay-windows-icon.patch",
+        "airplay-windows-bridge.patch")) {
     $patchPath = Join-Path $PSScriptRoot $patchName
-    git -C $SourceDirectory apply --reverse --check $patchPath 2>$null
+    git -C $SourceDirectory apply --recount --reverse --check $patchPath 2>$null
     if ($LASTEXITCODE -ne 0) {
-        git -C $SourceDirectory apply $patchPath
+        git -C $SourceDirectory apply --recount $patchPath
     } else {
         Write-Host "$patchName is already applied."
     }

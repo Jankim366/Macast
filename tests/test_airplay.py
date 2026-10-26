@@ -131,6 +131,33 @@ class AirPlayProcessManagerTests(unittest.TestCase):
                     os.path.normcase(stream.read()),
                     os.path.normcase(os.path.abspath(directory)))
 
+    def test_media_state_file_is_parsed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.manager(working_dir=directory)
+            with open(manager.state_path, "w", encoding="utf-8") as stream:
+                stream.write(
+                    "title_hex={}\n"
+                    "artist_hex={}\n"
+                    "album_hex={}\n"
+                    "elapsed_ms=65000\n"
+                    "duration_ms=180000\n"
+                    "rate=1\n"
+                    "control=1\n"
+                    "has_cover=1\n"
+                    "cover_path=cover.jpg\n".format(
+                        "AirPlay Song".encode("utf-8").hex().upper(),
+                        "Macast Artist".encode("utf-8").hex().upper(),
+                        "Album".encode("utf-8").hex().upper()))
+
+            self.assertTrue(manager._read_media_state_locked())
+            state = manager.media_state
+            self.assertEqual(state["title"], "AirPlay Song")
+            self.assertEqual(state["artist"], "Macast Artist")
+            self.assertEqual(state["elapsed_ms"], 65000)
+            self.assertEqual(state["duration_ms"], 180000)
+            self.assertTrue(state["control"])
+            self.assertTrue(state["cover_path"].endswith("cover.jpg"))
+
     def test_hide_mode_preserves_settings_and_enables_chromeless(self):
         with tempfile.TemporaryDirectory() as directory:
             settings_path = os.path.join(directory, "settings.ini")

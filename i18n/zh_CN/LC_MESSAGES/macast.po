@@ -218,3 +218,33 @@ msgstr "显示镜像窗口"
 
 msgid "The AirPlay receiver window cannot be shown here."
 msgstr "当前平台无法从 Macast 显示 AirPlay 接收器窗口。"
+
+msgid "AirPlay: No audio metadata"
+msgstr "AirPlay：暂无音频信息"
+
+msgid "Previous Track"
+msgstr "上一首"
+
+msgid "Play"
+msgstr "播放"
+
+msgid "Pause"
+msgstr "暂停"
+
+msgid "Toggle Play/Pause"
+msgstr "播放/暂停切换"
+
+msgid "Next Track"
+msgstr "下一首"
+
+msgid "Volume Up"
+msgstr "增大音量"
+
+msgid "Volume Down"
+msgstr "降低音量"
+
+msgid "Toggle Mute"
+msgstr "静音切换"
+
+msgid "AirPlay media control is unavailable."
+msgstr "AirPlay 媒体控制当前不可用。"

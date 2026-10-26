@@ -83,6 +83,11 @@ This fork extends Macast with an independent
 - The video window follows the current portrait or landscape aspect ratio.
   Edge dragging is ratio-constrained and remains usable for resizing.
 - The AirPlay receiver name follows Macast's normal friendly-name setting.
+- Macast's native AirPlay submenu shows the current title/artist/time and
+  provides Previous, Play, Pause, Toggle Play/Pause, Next, Volume Up, Volume
+  Down, and Toggle Mute.
+- AirPlay metadata and reverse controls use the sender's DMAP/DACP services;
+  lyrics, complete playlists, and next-track previews are normally unavailable.
 - Macast stops the AirPlay process when it exits. Windows Job Objects are used
   to avoid orphaned receiver processes after an abnormal Macast exit.
 

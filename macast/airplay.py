@@ -21,6 +21,8 @@ class AirPlayProcessManager:
     """Supervise an AirPlay receiver that runs in its own process."""
 
     MACAST_BINARY_NAME = "airplay-windows-macast.exe"
+    PIPE_NAME = r"\\.\pipe\Macast-AirPlay-Control-v1"
+    STATE_FILE_NAME = "macast_airplay_state.ini"
 
     STARTING = "starting"
     RUNNING = "running"
@@ -40,6 +42,7 @@ class AirPlayProcessManager:
             auto_restart=True,
             hide_until_mirror=False,
             require_macast_window=False,
+            media_callback=None,
             max_restart_attempts=3,
             restart_delay=1.0,
             shutdown_timeout=5.0,
@@ -57,6 +60,7 @@ class AirPlayProcessManager:
         self.auto_restart = auto_restart
         self.hide_until_mirror = hide_until_mirror
         self.require_macast_window = require_macast_window
+        self.media_callback = media_callback
         self.max_restart_attempts = max(0, int(max_restart_attempts))
         self.restart_delay = max(0.0, float(restart_delay))
         self.shutdown_timeout = max(0.1, float(shutdown_timeout))
@@ -85,6 +89,17 @@ class AirPlayProcessManager:
         self._restart_attempts = 0
         self._state = self.STOPPED
         self._message = "AirPlay receiver is stopped"
+        self._media_state = {
+            "title": "",
+            "artist": "",
+            "album": "",
+            "elapsed_ms": 0,
+            "duration_ms": 0,
+            "rate": 0.0,
+            "control": False,
+            "has_cover": False,
+            "cover_path": "",
+        }
 
     @staticmethod
     def discover_executable(configured=None, search_dirs=None, env=None):
@@ -179,6 +194,17 @@ class AirPlayProcessManager:
     def message(self):
         with self._lock:
             return self._message
+
+    @property
+    def media_state(self):
+        with self._lock:
+            return dict(self._media_state)
+
+    @property
+    def state_path(self):
+        if not self.working_dir:
+            return None
+        return os.path.join(self.working_dir, self.STATE_FILE_NAME)
 
     @property
     def pid(self):
@@ -304,6 +330,66 @@ class AirPlayProcessManager:
             if shown and self._video_size:
                 self._resize_windows_video(self.pid, *self._video_size)
             return shown
+
+    def send_media_command(self, command, position_ms=None):
+        if sys.platform != "win32" or not self.is_running():
+            return False
+        if command not in {
+                "play", "pause", "playpause",
+                "previtem", "nextitem",
+                "volumeup", "volumedown", "mutetoggle", "seek"}:
+            return False
+        payload = command
+        if command == "seek":
+            payload = "seek:{}".format(max(0, int(position_ms or 0)))
+        payload = (payload + "\n").encode("ascii")
+
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
+        kernel32.WaitNamedPipeW.restype = wintypes.BOOL
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+            wintypes.HANDLE]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.WriteFile.argtypes = [
+            wintypes.HANDLE, wintypes.LPCVOID, wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+        kernel32.WriteFile.restype = wintypes.BOOL
+        kernel32.ReadFile.argtypes = [
+            wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+        kernel32.ReadFile.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        if not kernel32.WaitNamedPipeW(self.PIPE_NAME, 300):
+            return False
+        handle = kernel32.CreateFileW(
+            self.PIPE_NAME, 0x80000000 | 0x40000000, 0,
+            None, 3, 0, None)
+        if handle == wintypes.HANDLE(-1).value:
+            return False
+        try:
+            written = wintypes.DWORD()
+            if not kernel32.WriteFile(
+                    handle, payload, len(payload),
+                    ctypes.byref(written), None):
+                return False
+            buffer = ctypes.create_string_buffer(16)
+            read = wintypes.DWORD()
+            if not kernel32.ReadFile(
+                    handle, buffer, len(buffer),
+                    ctypes.byref(read), None):
+                return False
+            reply = buffer.raw[:read.value].decode(
+                "ascii", errors="replace").strip()
+            return reply == "OK"
+        finally:
+            kernel32.CloseHandle(handle)
 
     @staticmethod
     def _external_instance_running(executable=None):
@@ -522,8 +608,17 @@ class AirPlayProcessManager:
 
             return_code = process.poll()
             if return_code is None:
+                media_changed = False
                 with self._lock:
                     self._update_receiver_window_locked(process)
+                    media_changed = self._read_media_state_locked()
+                if media_changed:
+                    callback = self.media_callback
+                    if callback is not None:
+                        try:
+                            callback(self.media_state)
+                        except Exception:
+                            logger.exception("AirPlay media callback failed")
                 if self._process_started_at is not None and \
                         time.monotonic() - self._process_started_at >= 30:
                     self._restart_attempts = 0
@@ -576,6 +671,50 @@ class AirPlayProcessManager:
                     return
                 self._set_status(
                     self.RUNNING, "AirPlay receiver is running")
+
+    def _read_media_state_locked(self):
+        path = self.state_path
+        if not path or not os.path.isfile(path):
+            return False
+        values = {}
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as stream:
+                for line in stream:
+                    key, separator, value = line.rstrip("\r\n").partition("=")
+                    if separator:
+                        values[key] = value
+        except OSError:
+            return False
+
+        state = dict(self._media_state)
+        for key in ("title", "artist", "album"):
+            encoded = values.get(key + "_hex", "")
+            try:
+                state[key] = bytes.fromhex(encoded).decode(
+                    "utf-8", errors="replace") if encoded else ""
+            except ValueError:
+                state[key] = ""
+
+        for key in ("elapsed_ms", "duration_ms"):
+            try:
+                state[key] = max(0, int(values.get(key, state[key])))
+            except (TypeError, ValueError):
+                pass
+        try:
+            state["rate"] = float(values.get("rate", state["rate"]))
+        except (TypeError, ValueError):
+            pass
+        state["control"] = values.get("control") == "1"
+        state["has_cover"] = values.get("has_cover") == "1"
+        state["cover_path"] = values.get("cover_path", "")
+        if state["cover_path"] and self.working_dir and \
+                not os.path.isabs(state["cover_path"]):
+            state["cover_path"] = os.path.join(
+                self.working_dir, state["cover_path"])
+        if state == self._media_state:
+            return False
+        self._media_state = state
+        return True
 
     def _set_status(self, state, message):
         self._state = state

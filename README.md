@@ -108,10 +108,10 @@ This fork extends Macast with an independent
   AirPlay and replaces the current item. Multiple senders are never mixed.
 - Controllable AirPlay audio is paused, rather than disconnected, when DLNA
   takes over, so it can resume automatically when the DLNA item stops.
-- Windows Bluetooth A2DP audio is available from the original Macast tray menu.
-  Pair the phone in Windows first, then select it under
-  `Setting > Bluetooth Audio Receiver`. No separate tray icon or Bluetooth UI
-  is opened.
+- Windows Bluetooth A2DP audio starts automatically with Macast. Pair the
+  phone in Windows first; compatible connected audio devices are discovered
+  automatically without selecting them in Macast. No separate tray icon or
+  Bluetooth UI is opened.
 - DACP services are discovered through the native Windows `_dacp._tcp.local`
   browser, including services registered after the AirPlay connection.
 - Audio logs its actual SDL/WASAPI endpoint. Remote-desktop and virtual

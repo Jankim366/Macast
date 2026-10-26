@@ -166,7 +166,8 @@ class MacastPluginManager:
 
 
 def create_airplay_process_manager(
-        status_callback=None, media_callback=None, session_callback=None):
+        status_callback=None, media_callback=None, session_callback=None,
+        session_ended_callback=None):
     configured_path = Setting.get(SettingProperty.AirPlayExecutable, '')
     auto_restart = bool(Setting.get(SettingProperty.AirPlayAutoRestart, 1))
     extra_arguments = Setting.get(SettingProperty.AirPlayExtraArguments, [])
@@ -193,6 +194,7 @@ def create_airplay_process_manager(
         require_macast_window=True,
         media_callback=media_callback,
         session_callback=session_callback,
+        session_ended_callback=session_ended_callback,
         status_callback=status_callback,
         env=Setting.get_system_env())
 
@@ -253,16 +255,20 @@ class Macast(App):
         self.bluetooth_audio_restart_menuitem = None
         self.bluetooth_audio_device_menuitems = []
         self.bluetooth_owns_output = False
+        self.airplay_session_active = False
 
         if airplay_manager is None:
             airplay_manager = create_airplay_process_manager(
                 self.on_airplay_status_changed,
                 self.on_airplay_media_state_changed,
-                self.on_airplay_session_started)
+                self.on_airplay_session_started,
+                self.on_airplay_session_ended)
         else:
             airplay_manager.status_callback = self.on_airplay_status_changed
             airplay_manager.media_callback = self.on_airplay_media_state_changed
             airplay_manager.session_callback = self.on_airplay_session_started
+            airplay_manager.session_ended_callback = \
+                self.on_airplay_session_ended
         self.airplay_manager = airplay_manager
         self.bluetooth_audio_manager = \
             create_bluetooth_audio_process_manager(
@@ -311,8 +317,7 @@ class Macast(App):
                 SettingProperty.AirPlayEnabled,
                 1 if sys.platform == 'win32' else 0):
             self._start_airplay_on_launch()
-        if self.bluetooth_audio_manager is not None and Setting.get(
-                SettingProperty.BluetoothAudioEnabled, 0):
+        if self.bluetooth_audio_manager is not None:
             self._start_bluetooth_audio_on_launch()
         logger.debug("Macast APP started")
 
@@ -437,38 +442,19 @@ class Macast(App):
             _("Restart Bluetooth Audio"),
             self.on_bluetooth_audio_restart_click,
             enabled=manager.is_running())
-        device_items = []
-        devices = manager.devices
-        if not devices:
-            device_items.append(MenuItem(
-                _("No paired Bluetooth audio devices"),
-                enabled=False))
-        else:
-            connected_id = manager.device_id
-            for device in devices:
-                item = MenuItem(
-                    device["name"] or device["id"],
-                    self.on_bluetooth_audio_device_click,
-                    checked=(device["id"] == connected_id),
-                    data=device)
-                device_items.append(item)
-        self.bluetooth_audio_device_menuitems = device_items
         open_bluetooth_settings = MenuItem(
             _("Open Windows Bluetooth Settings"),
             self.on_open_bluetooth_settings_click)
-        refresh_item = MenuItem(
-            _("Refresh Bluetooth Devices"),
-            self.on_refresh_bluetooth_devices_click,
-            enabled=manager.is_running())
         return [
             self.bluetooth_audio_status_menuitem,
             None,
             self.bluetooth_audio_toggle_menuitem,
             self.bluetooth_audio_restart_menuitem,
-            refresh_item,
             open_bluetooth_settings,
-            None,
-        ] + device_items
+            MenuItem(
+                _("Automatically follows connected Bluetooth audio"),
+                enabled=False),
+        ]
 
     def get_bluetooth_audio_status_text(self):
         manager = self.bluetooth_audio_manager
@@ -671,6 +657,7 @@ class Macast(App):
 
     def on_airplay_session_started(self):
         """The latest AirPlay sender preempts DLNA and Bluetooth audio."""
+        self.airplay_session_active = True
         self.cancel_airplay_resume()
         with self.airplay_preemption_lock:
             self.airplay_paused_by_dlna = False
@@ -681,6 +668,13 @@ class Macast(App):
                 bluetooth_manager.is_connected():
             bluetooth_manager.disconnect_device()
         self.stop_active_dlna()
+
+    def on_airplay_session_ended(self):
+        self.airplay_session_active = False
+        bluetooth_manager = getattr(
+            self, 'bluetooth_audio_manager', None)
+        if bluetooth_manager is not None and bluetooth_manager.is_running():
+            bluetooth_manager.resume_auto()
 
     def stop_active_dlna(self):
         protocol = self.service.protocol
@@ -843,8 +837,7 @@ class Macast(App):
     def _start_bluetooth_audio_on_launch(self):
         def delayed_start():
             time.sleep(1.0)
-            if Setting.get(SettingProperty.BluetoothAudioEnabled, 0):
-                self.start_bluetooth_audio(auto=True)
+            self.start_bluetooth_audio(auto=True)
 
         threading.Thread(
             target=delayed_start,
@@ -860,26 +853,6 @@ class Macast(App):
                 self.notification(_("Bluetooth Audio"), manager.message)
             return False
         Setting.set(SettingProperty.BluetoothAudioEnabled, 1)
-        configured_device = Setting.get(
-            SettingProperty.BluetoothAudioDevice, "")
-        if configured_device and not manager.is_connected():
-            device_name = ""
-            for device in manager.devices:
-                if device["id"] == configured_device:
-                    device_name = device["name"]
-                    break
-
-            def connect_saved_device():
-                if not manager.connect_device(
-                        configured_device, device_name):
-                    logger.warning(
-                        "Unable to reconnect Bluetooth audio: %s",
-                        manager.message)
-
-            threading.Thread(
-                target=connect_saved_device,
-                name="BLUETOOTH_AUDIO_CONNECT",
-                daemon=True).start()
         self.setting_menuitem.children = self.build_setting_menu()
         self.set_menu(self.menu)
         return True
@@ -937,6 +910,12 @@ class Macast(App):
     def renderer_av_stop(self):
         logger.info("renderer_av_stop")
         self.schedule_airplay_resume()
+        bluetooth_manager = getattr(
+            self, 'bluetooth_audio_manager', None)
+        if bluetooth_manager is not None and \
+                bluetooth_manager.is_running() and \
+                not getattr(self, 'airplay_session_active', False):
+            bluetooth_manager.resume_auto()
         if self.copy_menuitem:
             self.remove_menu_item_by_id(self.copy_menuitem.id)
         self.copy_menuitem = None
@@ -1061,42 +1040,6 @@ class Macast(App):
         threading.Thread(
             target=restart,
             name="BLUETOOTH_AUDIO_RESTART",
-            daemon=True).start()
-
-    def on_refresh_bluetooth_devices_click(self, item):
-        manager = self.bluetooth_audio_manager
-
-        def refresh():
-            manager.refresh_devices()
-            self.setting_menuitem.children = self.build_setting_menu()
-            self.set_menu(self.menu)
-
-        threading.Thread(
-            target=refresh,
-            name="BLUETOOTH_AUDIO_REFRESH",
-            daemon=True).start()
-
-    def on_bluetooth_audio_device_click(self, item):
-        manager = self.bluetooth_audio_manager
-        device = item.data
-
-        def connect():
-            if manager.is_connected():
-                manager.disconnect_device()
-            if manager.connect_device(device["id"], device["name"]):
-                Setting.set(
-                    SettingProperty.BluetoothAudioDevice, device["id"])
-                Setting.set(
-                    SettingProperty.BluetoothAudioEnabled, 1)
-            else:
-                self.notification(
-                    _("Bluetooth Audio"), manager.message)
-            self.setting_menuitem.children = self.build_setting_menu()
-            self.set_menu(self.menu)
-
-        threading.Thread(
-            target=connect,
-            name="BLUETOOTH_AUDIO_DEVICE",
             daemon=True).start()
 
     def on_open_bluetooth_settings_click(self, item):

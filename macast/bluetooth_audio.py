@@ -202,6 +202,7 @@ class BluetoothAudioProcessManager:
                     "Bluetooth audio backend exited during startup")
                 return False
             if self.send_command("PING")[0]:
+                self.send_command("AUTO ON")
                 self._set_state(self.READY, "Bluetooth audio receiver is ready")
                 self.refresh_devices()
                 self._ensure_monitor()
@@ -262,6 +263,7 @@ class BluetoothAudioProcessManager:
                     "name": bytes.fromhex(
                         device.get("name_hex", "")).decode(
                             "utf-8", errors="replace"),
+                    "connected": bool(device.get("connected", False)),
                 })
             devices.sort(key=lambda item: item["name"].casefold())
         except (ValueError, TypeError, json.JSONDecodeError):
@@ -292,6 +294,7 @@ class BluetoothAudioProcessManager:
     def disconnect_device(self):
         if not self.is_running():
             return False
+        self.send_command("AUTO OFF")
         ok, response = self.send_command("DISCONNECT")
         if ok:
             with self._lock:
@@ -300,6 +303,23 @@ class BluetoothAudioProcessManager:
             self._set_state(
                 self.READY, "Bluetooth audio receiver is ready")
         return ok
+
+    def suspend_auto(self):
+        if not self.is_running():
+            return False
+        ok, _ = self.send_command("AUTO OFF")
+        if ok:
+            with self._lock:
+                self._device_id = ""
+                self._device_name = ""
+            self._set_state(
+                self.READY, "Bluetooth audio is waiting for preemption")
+        return ok
+
+    def resume_auto(self):
+        if not self.is_running():
+            return False
+        return self.send_command("AUTO ON")[0]
 
     def send_command(self, command, timeout_ms=3000):
         if sys.platform != "win32":

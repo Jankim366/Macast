@@ -45,6 +45,7 @@ class AirPlayProcessManager:
             require_macast_window=False,
             media_callback=None,
             session_callback=None,
+            session_ended_callback=None,
             max_restart_attempts=3,
             restart_delay=1.0,
             startup_timeout=10.0,
@@ -66,6 +67,7 @@ class AirPlayProcessManager:
         self.require_macast_window = require_macast_window
         self.media_callback = media_callback
         self.session_callback = session_callback
+        self.session_ended_callback = session_ended_callback
         self.max_restart_attempts = max(0, int(max_restart_attempts))
         self.restart_delay = max(0.0, float(restart_delay))
         self.startup_timeout = max(1.0, float(startup_timeout))
@@ -697,7 +699,7 @@ class AirPlayProcessManager:
 
     def _read_mirror_events_locked(self, process=None):
         if not self.log_path or not os.path.isfile(self.log_path):
-            return False
+            return False, False
         try:
             with open(self.log_path, "rb") as stream:
                 stream.seek(self._log_read_offset)
@@ -706,13 +708,17 @@ class AirPlayProcessManager:
         except OSError:
             return False
         if not data:
-            return False
+            return False, False
 
         text = data.decode("utf-8", errors="replace")
         session_started = False
+        session_ended = False
         for line in text.splitlines():
             if "AirPlay session START:" in line:
                 session_started = True
+            if "TEARDOWN full session=" in line or \
+                    "Connection ended: cleared active session=" in line:
+                session_ended = True
             if process is not None and \
                     "mDNS register:" in line and "status=0" in line:
                 if "._raop._tcp.local" in line:
@@ -761,7 +767,7 @@ class AirPlayProcessManager:
                         if self._window_shown_for_session or \
                                 self._window_user_visible:
                             self._resize_windows_video(self.pid, *size)
-        return session_started
+        return session_started, session_ended
 
     def _ensure_monitor_locked(self):
         if self._monitor is not None and self._monitor.is_alive():
@@ -809,8 +815,10 @@ class AirPlayProcessManager:
             if return_code is None:
                 media_changed = False
                 session_started = False
+                session_ended = False
                 with self._lock:
-                    session_started = self._read_mirror_events_locked(process)
+                    session_started, session_ended = \
+                        self._read_mirror_events_locked(process)
                     self._update_receiver_window_locked(process)
                     media_changed = self._read_media_state_locked()
                     startup_timed_out = (
@@ -834,6 +842,14 @@ class AirPlayProcessManager:
                         except Exception:
                             logger.exception(
                                 "AirPlay session callback failed")
+                if session_ended:
+                    callback = self.session_ended_callback
+                    if callback is not None:
+                        try:
+                            callback()
+                        except Exception:
+                            logger.exception(
+                                "AirPlay session ended callback failed")
                 if startup_timed_out:
                     logger.error(
                         "AirPlay receiver did not publish mDNS services "

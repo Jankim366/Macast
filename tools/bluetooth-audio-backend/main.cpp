@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <map>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -30,20 +31,29 @@
 namespace {
 
 using winrt::Windows::Devices::Enumeration::DeviceInformation;
+using winrt::Windows::Devices::Enumeration::DeviceInformationUpdate;
+using winrt::Windows::Devices::Enumeration::DeviceWatcher;
 using winrt::Windows::Foundation::Metadata::ApiInformation;
 using winrt::Windows::Media::Audio::AudioPlaybackConnection;
 using winrt::Windows::Media::Audio::AudioPlaybackConnectionOpenResultStatus;
 using winrt::Windows::Media::Audio::AudioPlaybackConnectionState;
 
-constexpr wchar_t kMutexName[] =
-    L"Local\\Macast.BluetoothAudioBackend.v1";
+struct DeviceRecord {
+    std::wstring id;
+    std::wstring name;
+    bool connected{false};
+};
+
 constexpr wchar_t kDefaultPipeName[] =
     L"\\\\.\\pipe\\Macast-BluetoothAudio-Control-v1";
 
 std::atomic<bool> g_stop{false};
 std::atomic<bool> g_initial_activation_pending{true};
+std::atomic<bool> g_auto_mode{false};
 std::mutex g_state_mutex;
 std::mutex g_log_mutex;
+std::mutex g_connect_mutex;
+std::mutex g_devices_mutex;
 std::wstring g_pipe_name = kDefaultPipeName;
 std::wstring g_state_path;
 std::wstring g_log_path;
@@ -54,6 +64,10 @@ std::string g_state = "disconnected";
 AudioPlaybackConnection g_connection{nullptr};
 winrt::event_token g_state_token{};
 uint64_t g_generation = 0;
+std::size_t g_auto_device_index = 0;
+std::thread g_auto_thread;
+DeviceWatcher g_device_watcher{nullptr};
+std::map<std::wstring, DeviceRecord> g_known_devices;
 
 std::string utf8(const winrt::hstring& value) {
     return winrt::to_string(value);
@@ -176,27 +190,76 @@ void close_connection() {
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
 }
 
-std::vector<std::pair<std::wstring, std::wstring>> list_devices() {
-    std::vector<std::pair<std::wstring, std::wstring>> result;
-    const auto selector = AudioPlaybackConnection::GetDeviceSelector();
-    const auto devices = DeviceInformation::FindAllAsync(selector).get();
-    for (const auto& device : devices) {
-        result.emplace_back(
-            std::wstring(device.Id()), std::wstring(device.Name()));
+std::vector<DeviceRecord> list_devices() {
+    std::vector<DeviceRecord> result;
+    std::lock_guard lock(g_devices_mutex);
+    for (const auto& entry : g_known_devices) {
+        result.push_back(entry.second);
     }
     return result;
+}
+
+void start_device_watcher() {
+    try {
+        g_device_watcher = DeviceInformation::CreateWatcher(
+            AudioPlaybackConnection::GetDeviceSelector());
+        g_device_watcher.Added(
+            [](const DeviceWatcher&,
+               const DeviceInformation& device) {
+                if (g_stop.load()) return;
+                std::lock_guard lock(g_devices_mutex);
+                g_known_devices[std::wstring(device.Id())] = DeviceRecord{
+                    std::wstring(device.Id()),
+                    std::wstring(device.Name()),
+                    true,
+                };
+                log_line("Bluetooth audio device available: " +
+                         utf8(device.Name()));
+            });
+        g_device_watcher.Updated(
+            [](const DeviceWatcher&,
+               const DeviceInformationUpdate& update) {
+                if (g_stop.load()) return;
+                std::lock_guard lock(g_devices_mutex);
+                const auto found = g_known_devices.find(
+                    std::wstring(update.Id()));
+                if (found != g_known_devices.end()) {
+                    found->second.connected = true;
+                }
+            });
+        g_device_watcher.Removed(
+            [](const DeviceWatcher&,
+               const DeviceInformationUpdate& update) {
+                std::lock_guard lock(g_devices_mutex);
+                g_known_devices.erase(std::wstring(update.Id()));
+            });
+        g_device_watcher.Start();
+    } catch (const winrt::hresult_error& exception) {
+        log_line("Bluetooth device watcher failed: " +
+                 utf8(exception.message()));
+    }
+}
+
+void stop_device_watcher() {
+    if (!g_device_watcher) return;
+    try {
+        g_device_watcher.Stop();
+    } catch (...) {
+    }
+    g_device_watcher = nullptr;
 }
 
 std::string devices_json() {
     std::ostringstream out;
     out << "{\"devices\":[";
     bool first = true;
-    for (const auto& [id, name] : list_devices()) {
+    for (const auto& device : list_devices()) {
         if (!first) out << ',';
         first = false;
-        out << "{\"id_hex\":\"" << encode_hstring(id)
-            << "\",\"name_hex\":\"" << encode_hstring(name)
-            << "\"}";
+        out << "{\"id_hex\":\"" << encode_hstring(device.id)
+            << "\",\"name_hex\":\"" << encode_hstring(device.name)
+            << "\",\"connected\":"
+            << (device.connected ? "true" : "false") << '}';
     }
     out << "]}";
     return out.str();
@@ -223,6 +286,7 @@ bool wait_for_operation(
 bool connect_device(
         const std::string& device_id_utf8,
         std::string& error) {
+    std::lock_guard connect_lock(g_connect_mutex);
     const winrt::hstring device_id =
         winrt::to_hstring(device_id_utf8);
     const std::wstring device_id_wide = wide(device_id);
@@ -362,6 +426,69 @@ bool connect_device(
     return false;
 }
 
+void auto_connection_loop() {
+    while (g_auto_mode.load() && !g_stop.load()) {
+        bool already_connected = false;
+        {
+            std::lock_guard lock(g_state_mutex);
+            already_connected = g_state == "connected";
+        }
+        if (already_connected) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
+
+        std::vector<DeviceRecord> devices;
+        try {
+            devices = list_devices();
+        } catch (const winrt::hresult_error& exception) {
+            log_line("Bluetooth auto discovery failed: " +
+                     utf8(exception.message()));
+        } catch (...) {
+            log_line("Bluetooth auto discovery failed");
+        }
+
+        if (!devices.empty()) {
+            const std::size_t count = devices.size();
+            for (std::size_t attempt = 0;
+                 attempt < count && g_auto_mode.load() && !g_stop.load();
+                 ++attempt) {
+                const std::size_t index =
+                    (g_auto_device_index + attempt) % count;
+                const auto& device = devices[index];
+                log_line("Bluetooth auto-connect: " +
+                         utf8(winrt::hstring(device.name)));
+                std::string error;
+                if (connect_device(
+                        utf8(winrt::hstring(device.id)), error)) {
+                    g_auto_device_index = (index + 1) % count;
+                    break;
+                }
+                log_line("Bluetooth auto-connect failed: " + error);
+            }
+        }
+
+        for (int i = 0; i < 20 && g_auto_mode.load() && !g_stop.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+}
+
+void start_auto_mode() {
+    if (g_auto_mode.exchange(true)) return;
+    if (g_auto_thread.joinable()) g_auto_thread.join();
+    g_auto_device_index = 0;
+    g_auto_thread = std::thread(auto_connection_loop);
+    log_line("Bluetooth auto-connect enabled");
+}
+
+void stop_auto_mode() {
+    if (!g_auto_mode.exchange(false)) return;
+    if (g_auto_thread.joinable()) g_auto_thread.join();
+    g_auto_device_index = 0;
+    log_line("Bluetooth auto-connect disabled");
+}
+
 bool write_all(HANDLE pipe, const std::string& data) {
     std::size_t offset = 0;
     while (offset < data.size()) {
@@ -388,6 +515,17 @@ std::string handle_command(const std::string& command) {
         }
     }
     if (command == "DISCONNECT") {
+        stop_auto_mode();
+        close_connection();
+        set_state("disconnected");
+        return "OK\n";
+    }
+    if (command == "AUTO ON") {
+        start_auto_mode();
+        return "OK\n";
+    }
+    if (command == "AUTO OFF") {
+        stop_auto_mode();
         close_connection();
         set_state("disconnected");
         return "OK\n";
@@ -404,6 +542,7 @@ std::string handle_command(const std::string& command) {
         return "ERR " + error + "\n";
     }
     if (command == "SHUTDOWN") {
+        stop_auto_mode();
         g_stop.store(true);
         return "OK\n";
     }
@@ -491,16 +630,23 @@ int APIENTRY wWinMain(
         return 2;
     }
 
-    HANDLE mutex = CreateMutexW(nullptr, TRUE, kMutexName);
+    const std::wstring mutex_name =
+        L"Local\\Macast.BluetoothAudioBackend." +
+        std::to_wstring(std::hash<std::wstring>{}(g_pipe_name));
+    HANDLE mutex = CreateMutexW(
+        nullptr, TRUE, mutex_name.c_str());
     if (!mutex || GetLastError() == ERROR_ALREADY_EXISTS) {
         if (mutex) CloseHandle(mutex);
         return 3;
     }
 
-    set_state("disconnected");
     log_line("Bluetooth audio backend started");
+    start_device_watcher();
+    set_state("disconnected");
     std::thread(pipe_loop).join();
 
+    stop_auto_mode();
+    stop_device_watcher();
     close_connection();
     log_line("Bluetooth audio backend stopped");
     ReleaseMutex(mutex);

@@ -17,14 +17,15 @@ pairing and driver compatibility layer.
 ## Usage
 
 1. Pair the phone in Windows Settings.
-2. Open `Macast > Setting > Bluetooth Audio Receiver`.
-3. Click `Start Bluetooth Audio`, then select the paired phone.
-4. Play audio on the phone. Windows routes it to the current audio output.
-5. Select the connected phone again, or click `Stop Bluetooth Audio`, to
-   disconnect it.
+2. Start Macast. The hidden Bluetooth backend starts automatically.
+3. Any compatible paired Bluetooth audio device reported by Windows is
+   connected automatically. No device selection is required in Macast.
+4. Play audio on the phone. The newest playing source preempts AirPlay or DLNA.
+5. Use the Macast Bluetooth submenu only for status, temporary stop/restart,
+   or opening Windows Bluetooth settings.
 
-Macast stores the selected device and can reconnect it automatically after a
-later launch.
+The backend uses a `DeviceWatcher`, so devices added after Macast starts are
+also picked up without restarting the application.
 
 ## Arbitration
 

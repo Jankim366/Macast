@@ -133,10 +133,6 @@ AirPlay 屏幕镜像与音频接收进程的部署、配置和验证方式见
 - 如果被抢占的是可控制的 AirPlay 音乐，Macast 会通过 DACP 暂停而不是
   粗暴断开连接；安卓 DLNA 停止后，iPhone 音乐会恢复播放。屏幕镜像或
   无法控制的发送端仍使用强制抢占。
-- Windows 蓝牙 A2DP 接收随 Macast 自动启动。手机只需先在 Windows
-  设置中完成配对，兼容的已连接音频设备会自动发现和接入，无需在
-  Macast 中选择设备；也不会启动 AudioPlaybackConnector 的第二个托盘
-  或独立界面。
 - AirPlay 音频会记录实际使用的 SDL/WASAPI 输出设备。若 Windows 默认输出
   是 `ToDesk Virtual Audio`、`RemoteControl Virtual Audio` 或网易虚拟声卡，
   接收器会优先切换到可用的本地扬声器；也可通过环境变量

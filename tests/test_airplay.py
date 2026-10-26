@@ -216,15 +216,8 @@ class AirPlayProcessManagerTests(unittest.TestCase):
                     "=== AirPlay session START: Phone B "
                     "(iPhone16,1) 192.168.1.3 ===\n")
 
-            self.assertEqual(
-                manager._read_mirror_events_locked(), (True, False))
-            with open(log_path, "a", encoding="utf-8") as stream:
-                stream.write(
-                    "TEARDOWN full session=42 — AirPlay session ended\n")
-            self.assertEqual(
-                manager._read_mirror_events_locked(), (False, True))
-            self.assertEqual(
-                manager._read_mirror_events_locked(), (False, False))
+            self.assertTrue(manager._read_mirror_events_locked())
+            self.assertFalse(manager._read_mirror_events_locked())
 
     def test_mdns_registration_marks_startup_ready(self):
         with tempfile.TemporaryDirectory() as directory:

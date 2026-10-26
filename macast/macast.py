@@ -21,7 +21,6 @@ from .protocol import DLNAProtocol
 from .server import Service
 from .utils import RENDERER_DIR, PROTOCOL_DIR, Setting
 from .airplay import AirPlayProcessManager
-from .bluetooth_audio import BluetoothAudioProcessManager
 from macast_renderer.mpv import MPVRenderer
 
 logger = logging.getLogger("main")
@@ -166,8 +165,7 @@ class MacastPluginManager:
 
 
 def create_airplay_process_manager(
-        status_callback=None, media_callback=None, session_callback=None,
-        session_ended_callback=None):
+        status_callback=None, media_callback=None, session_callback=None):
     configured_path = Setting.get(SettingProperty.AirPlayExecutable, '')
     auto_restart = bool(Setting.get(SettingProperty.AirPlayAutoRestart, 1))
     extra_arguments = Setting.get(SettingProperty.AirPlayExtraArguments, [])
@@ -194,17 +192,7 @@ def create_airplay_process_manager(
         require_macast_window=True,
         media_callback=media_callback,
         session_callback=session_callback,
-        session_ended_callback=session_ended_callback,
         status_callback=status_callback,
-        env=Setting.get_system_env())
-
-
-def create_bluetooth_audio_process_manager(state_callback=None):
-    if sys.platform != 'win32':
-        return None
-    return BluetoothAudioProcessManager(
-        working_dir=os.path.join(SETTING_DIR, 'BluetoothAudio'),
-        state_callback=state_callback,
         env=Setting.get_system_env())
 
 
@@ -249,30 +237,17 @@ class Macast(App):
         self.airplay_preemption_lock = threading.RLock()
         self.airplay_paused_by_dlna = False
         self.airplay_resume_timer = None
-        self.bluetooth_audio_menuitem = None
-        self.bluetooth_audio_status_menuitem = None
-        self.bluetooth_audio_toggle_menuitem = None
-        self.bluetooth_audio_restart_menuitem = None
-        self.bluetooth_audio_device_menuitems = []
-        self.bluetooth_owns_output = False
-        self.airplay_session_active = False
 
         if airplay_manager is None:
             airplay_manager = create_airplay_process_manager(
                 self.on_airplay_status_changed,
                 self.on_airplay_media_state_changed,
-                self.on_airplay_session_started,
-                self.on_airplay_session_ended)
+                self.on_airplay_session_started)
         else:
             airplay_manager.status_callback = self.on_airplay_status_changed
             airplay_manager.media_callback = self.on_airplay_media_state_changed
             airplay_manager.session_callback = self.on_airplay_session_started
-            airplay_manager.session_ended_callback = \
-                self.on_airplay_session_ended
         self.airplay_manager = airplay_manager
-        self.bluetooth_audio_manager = \
-            create_bluetooth_audio_process_manager(
-                self.on_bluetooth_audio_state_changed)
 
         self.plugin_manager = MacastPluginManager(
             MacastPlugin(None, format_class_name(renderer), renderer, 'darwin,win32,linux'),
@@ -311,14 +286,10 @@ class Macast(App):
         cherrypy.engine.subscribe('app_notify', self.notification)
         self.start_cast()
         atexit.register(self.airplay_manager.stop)
-        if self.bluetooth_audio_manager is not None:
-            atexit.register(self.bluetooth_audio_manager.stop)
         if Setting.get(
                 SettingProperty.AirPlayEnabled,
                 1 if sys.platform == 'win32' else 0):
             self._start_airplay_on_launch()
-        if self.bluetooth_audio_manager is not None:
-            self._start_bluetooth_audio_on_launch()
         logger.debug("Macast APP started")
 
     def build_app_menu(self):
@@ -405,12 +376,6 @@ class Macast(App):
         self.airplay_menuitem = MenuItem(
             _("AirPlay Screen Mirroring"),
             children=self.build_airplay_menu())
-        bluetooth_settings = []
-        if self.bluetooth_audio_manager is not None:
-            self.bluetooth_audio_menuitem = MenuItem(
-                _("Bluetooth Audio Receiver"),
-                children=self.build_bluetooth_audio_menu())
-            bluetooth_settings = [self.bluetooth_audio_menuitem, None]
 
         self.menubar_icon_menuitem.items()[self.setting_menubar_icon].checked = True
         player_settings = self.service.renderer.renderer_setting.build_menu()
@@ -423,63 +388,11 @@ class Macast(App):
                protocol_select + \
                [None] + \
                player_settings + \
-               bluetooth_settings + \
                airplay_settings + \
                [self.menubar_icon_menuitem, self.auto_check_update_menuitem,
                 self.open_config_menuitem, self.advanced_menuitem] + \
                platform_options + \
                [None, self.check_update_menuitem, self.about_menuitem]
-
-    def build_bluetooth_audio_menu(self):
-        manager = self.bluetooth_audio_manager
-        self.bluetooth_audio_status_menuitem = MenuItem(
-            self.get_bluetooth_audio_status_text(),
-            enabled=False)
-        self.bluetooth_audio_toggle_menuitem = MenuItem(
-            self.get_bluetooth_audio_toggle_text(),
-            self.on_bluetooth_audio_toggle_click)
-        self.bluetooth_audio_restart_menuitem = MenuItem(
-            _("Restart Bluetooth Audio"),
-            self.on_bluetooth_audio_restart_click,
-            enabled=manager.is_running())
-        open_bluetooth_settings = MenuItem(
-            _("Open Windows Bluetooth Settings"),
-            self.on_open_bluetooth_settings_click)
-        return [
-            self.bluetooth_audio_status_menuitem,
-            None,
-            self.bluetooth_audio_toggle_menuitem,
-            self.bluetooth_audio_restart_menuitem,
-            open_bluetooth_settings,
-            MenuItem(
-                _("Automatically follows connected Bluetooth audio"),
-                enabled=False),
-        ]
-
-    def get_bluetooth_audio_status_text(self):
-        manager = self.bluetooth_audio_manager
-        labels = {
-            manager.STOPPED: _("Stopped"),
-            manager.STARTING: _("Starting"),
-            manager.READY: _("Ready"),
-            manager.CONNECTING: _("Connecting"),
-            manager.CONNECTED: _("Connected"),
-            manager.ERROR: _("Error"),
-            manager.MISSING: _("Executable not found"),
-        }
-        text = "{}: {}".format(
-            _("Bluetooth Audio"),
-            labels.get(manager.state, manager.state))
-        if manager.state == manager.CONNECTED and manager.device_name:
-            text += " ({})".format(manager.device_name)
-        elif manager.state == manager.ERROR and manager.message:
-            text += " ({})".format(manager.message)
-        return text
-
-    def get_bluetooth_audio_toggle_text(self):
-        if self.bluetooth_audio_manager.is_running():
-            return _("Stop Bluetooth Audio")
-        return _("Start Bluetooth Audio")
 
     def build_airplay_menu(self):
         media = self.airplay_manager.media_state
@@ -656,27 +569,10 @@ class Macast(App):
         self.update_menu()
 
     def on_airplay_session_started(self):
-        """The latest AirPlay sender preempts DLNA and Bluetooth audio."""
-        self.airplay_session_active = True
+        """The latest AirPlay sender preempts any active DLNA playback."""
         self.cancel_airplay_resume()
         with self.airplay_preemption_lock:
             self.airplay_paused_by_dlna = False
-        self.bluetooth_owns_output = False
-        bluetooth_manager = getattr(
-            self, 'bluetooth_audio_manager', None)
-        if bluetooth_manager is not None and \
-                bluetooth_manager.is_connected():
-            bluetooth_manager.disconnect_device()
-        self.stop_active_dlna()
-
-    def on_airplay_session_ended(self):
-        self.airplay_session_active = False
-        bluetooth_manager = getattr(
-            self, 'bluetooth_audio_manager', None)
-        if bluetooth_manager is not None and bluetooth_manager.is_running():
-            bluetooth_manager.resume_auto()
-
-    def stop_active_dlna(self):
         protocol = self.service.protocol
         uri = protocol.get_state_url()
         transport = protocol.get_state_transport_state()
@@ -688,17 +584,8 @@ class Macast(App):
         cherrypy.engine.publish('renderer_av_stop')
 
     def on_dlna_cast_requested(self, uri):
-        """The latest DLNA sender preempts AirPlay and Bluetooth audio."""
+        """The latest DLNA sender suspends or disconnects AirPlay."""
         self.cancel_airplay_resume()
-        self.bluetooth_owns_output = False
-        bluetooth_manager = getattr(
-            self, 'bluetooth_audio_manager', None)
-        if bluetooth_manager is not None and \
-                bluetooth_manager.is_connected():
-            bluetooth_manager.disconnect_device()
-        self.suspend_or_preempt_airplay("DLNA", uri)
-
-    def suspend_or_preempt_airplay(self, source, detail=""):
         media = self.airplay_manager.media_state
         has_airplay_media = bool(
             media.get("title") or media.get("artist") or
@@ -707,49 +594,12 @@ class Macast(App):
             if self.airplay_manager.send_media_command("pause"):
                 with self.airplay_preemption_lock:
                     self.airplay_paused_by_dlna = True
-                logger.warning(
-                    "%s sender paused active AirPlay audio", source)
-                return True
+                logger.warning("DLNA sender paused active AirPlay audio")
+                return
         if self.airplay_manager.send_media_command("preempt"):
             logger.warning(
-                "%s sender preempted an active AirPlay session: %s",
-                source, detail)
-        return False
-
-    def on_bluetooth_audio_state_changed(self, snapshot):
-        state = snapshot.get("state", "")
-        manager = self.bluetooth_audio_manager
-        if self.bluetooth_audio_status_menuitem is not None:
-            self.bluetooth_audio_status_menuitem.text = \
-                self.get_bluetooth_audio_status_text()
-            self.bluetooth_audio_toggle_menuitem.text = \
-                self.get_bluetooth_audio_toggle_text()
-            self.bluetooth_audio_restart_menuitem.enabled = \
-                manager.is_running()
-            for item in self.bluetooth_audio_device_menuitems:
-                device = item.data or {}
-                item.checked = device.get("id") == manager.device_id
-
-        if state == manager.CONNECTED and not self.bluetooth_owns_output:
-            self.bluetooth_owns_output = True
-            if manager.device_id:
-                Setting.set(
-                    SettingProperty.BluetoothAudioDevice,
-                    manager.device_id)
-            self.cancel_airplay_resume()
-            self.suspend_or_preempt_airplay(
-                "Bluetooth", manager.device_name)
-            self.stop_active_dlna()
-        elif state in {
-                manager.READY, manager.STOPPED, manager.ERROR,
-                manager.MISSING} and self.bluetooth_owns_output:
-            self.bluetooth_owns_output = False
-            self.schedule_airplay_resume()
-
-        if state == manager.ERROR and manager.message:
-            logger.warning("Bluetooth audio error: %s", manager.message)
-        if self.bluetooth_audio_menuitem is not None:
-            self.update_menu()
+                "DLNA sender preempted an active AirPlay session: %s",
+                uri)
 
     def cancel_airplay_resume(self):
         with self.airplay_preemption_lock:
@@ -761,11 +611,6 @@ class Macast(App):
     def schedule_airplay_resume(self):
         with self.airplay_preemption_lock:
             if not self.airplay_paused_by_dlna:
-                return
-            bluetooth_manager = getattr(
-                self, 'bluetooth_audio_manager', None)
-            if bluetooth_manager is not None and \
-                    bluetooth_manager.is_connected():
                 return
             if self.airplay_resume_timer is not None:
                 self.airplay_resume_timer.cancel()
@@ -781,11 +626,6 @@ class Macast(App):
             self.airplay_resume_timer = None
             if not self.airplay_paused_by_dlna:
                 return
-        bluetooth_manager = getattr(
-            self, 'bluetooth_audio_manager', None)
-        if bluetooth_manager is not None and \
-                bluetooth_manager.is_connected():
-            return
         success = False
         for command in ("play", "playpause", "play"):
             if self.airplay_manager.send_media_command(command):
@@ -838,41 +678,6 @@ class Macast(App):
         self.airplay_manager.stop()
         Setting.set(SettingProperty.AirPlayEnabled, 0)
 
-    def _start_bluetooth_audio_on_launch(self):
-        def delayed_start():
-            time.sleep(1.0)
-            self.start_bluetooth_audio(auto=True)
-
-        threading.Thread(
-            target=delayed_start,
-            name="BLUETOOTH_AUDIO_AUTOSTART",
-            daemon=True).start()
-
-    def start_bluetooth_audio(self, auto=False):
-        manager = self.bluetooth_audio_manager
-        if manager is None:
-            return False
-        preferred_device = Setting.get(
-            SettingProperty.BluetoothAudioDevice, "")
-        if not manager.start(preferred_device=preferred_device):
-            if not auto:
-                self.notification(_("Bluetooth Audio"), manager.message)
-            return False
-        Setting.set(SettingProperty.BluetoothAudioEnabled, 1)
-        self.setting_menuitem.children = self.build_setting_menu()
-        self.set_menu(self.menu)
-        return True
-
-    def stop_bluetooth_audio(self):
-        manager = self.bluetooth_audio_manager
-        if manager is None:
-            return False
-        manager.stop()
-        Setting.set(SettingProperty.BluetoothAudioEnabled, 0)
-        self.setting_menuitem.children = self.build_setting_menu()
-        self.set_menu(self.menu)
-        return True
-
     def service_start(self):
         """This function is called every time the DLNA service is started.
         Displays a notification reminding the user that the service has started
@@ -916,12 +721,6 @@ class Macast(App):
     def renderer_av_stop(self):
         logger.info("renderer_av_stop")
         self.schedule_airplay_resume()
-        bluetooth_manager = getattr(
-            self, 'bluetooth_audio_manager', None)
-        if bluetooth_manager is not None and \
-                bluetooth_manager.is_running() and \
-                not getattr(self, 'airplay_session_active', False):
-            bluetooth_manager.resume_auto()
         if self.copy_menuitem:
             self.remove_menu_item_by_id(self.copy_menuitem.id)
         self.copy_menuitem = None
@@ -1022,36 +821,6 @@ class Macast(App):
                 _("AirPlay"),
                 _("AirPlay media control is unavailable."))
 
-    def on_bluetooth_audio_toggle_click(self, item):
-        manager = self.bluetooth_audio_manager
-        if manager.is_running():
-            self.stop_bluetooth_audio()
-        else:
-            threading.Thread(
-                target=self.start_bluetooth_audio,
-                name="BLUETOOTH_AUDIO_START",
-                daemon=True).start()
-
-    def on_bluetooth_audio_restart_click(self, item):
-        manager = self.bluetooth_audio_manager
-
-        def restart():
-            if not manager.restart():
-                self.notification(
-                    _("Bluetooth Audio"), manager.message)
-                return
-            self.setting_menuitem.children = self.build_setting_menu()
-            self.set_menu(self.menu)
-
-        threading.Thread(
-            target=restart,
-            name="BLUETOOTH_AUDIO_RESTART",
-            daemon=True).start()
-
-    def on_open_bluetooth_settings_click(self, item):
-        if sys.platform == 'win32':
-            os.startfile("ms-settings:bluetooth")
-
     def on_menubar_icon_change_click(self, item):
         for i in self.menubar_icon_menuitem.items():
             i.checked = False
@@ -1066,9 +835,6 @@ class Macast(App):
             self.stop_cast()
         self.airplay_manager.stop()
         self.airplay_manager.status_callback = None
-        if self.bluetooth_audio_manager is not None:
-            self.bluetooth_audio_manager.stop()
-            self.bluetooth_audio_manager.state_callback = None
         super(Macast, self).quit(item)
 
 

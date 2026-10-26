@@ -44,8 +44,6 @@ class SettingProperty(Enum):
     AirPlayAutoRestart = 12
     AirPlayExtraArguments = 13
     AirPlayHideWindowsUI = 14
-    BluetoothAudioEnabled = 15
-    BluetoothAudioDevice = 16
 
 
 class Setting:

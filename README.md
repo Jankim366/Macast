@@ -84,6 +84,10 @@ This fork extends Macast with an independent
 - AirPlay publishing is pinned to the physical Wi-Fi/Ethernet interface and its
   real IPv4/MAC address. FlClash, ZeroTier and VPN adapters are not allowed to
   capture the AirPlay mDNS record; DACP browsing uses the same LAN interface.
+- The packed backend is staged in Macast's stable user-data directory so its
+  Windows Firewall rule survives PyInstaller's changing `_MEI...` directories.
+  The first run requests administrator permission once to disable stale
+  per-executable Block rules and create a LocalSubnet inbound Allow rule.
 - During mirroring, a standard Windows video window is shown with native
   minimize, maximize, and close controls.
 - The video window follows the current portrait or landscape aspect ratio.

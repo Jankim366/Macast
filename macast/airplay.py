@@ -4,6 +4,7 @@
 # AirPlay-Windows.
 
 import logging
+import hashlib
 import os
 import re
 import shutil
@@ -246,6 +247,7 @@ class AirPlayProcessManager:
                     self.ERROR,
                     "Macast-compatible AirPlay-Windows build was not found")
                 return False
+            executable = self._stage_executable_locked(executable)
             if self._external_instance_running(executable):
                 self._set_status(
                     self.STARTING,
@@ -260,6 +262,13 @@ class AirPlayProcessManager:
                         self.ERROR,
                         "AirPlay-Windows is already running outside Macast")
                     return False
+            if self.require_macast_window and \
+                    not self._ensure_firewall_locked(executable):
+                self._desired_running = False
+                self._set_status(
+                    self.ERROR,
+                    "Windows Firewall permission is required for AirPlay")
+                return False
 
             self.executable = executable
             self._desired_running = True
@@ -288,6 +297,147 @@ class AirPlayProcessManager:
                     self.STARTING,
                     "Waiting for AirPlay discovery to become ready")
             return True
+
+    @staticmethod
+    def _file_sha256(path):
+        digest = hashlib.sha256()
+        with open(path, "rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _stage_executable_locked(self, source):
+        """Keep the PyInstaller backend at a stable path for firewall rules."""
+        if sys.platform != "win32" or not getattr(sys, "frozen", False) or \
+                not self.working_dir:
+            return source
+        os.makedirs(self.working_dir, exist_ok=True)
+        destination = os.path.join(
+            self.working_dir, self.MACAST_BINARY_NAME)
+        if os.path.normcase(os.path.abspath(source)) == \
+                os.path.normcase(os.path.abspath(destination)):
+            return destination
+
+        source_hash = self._file_sha256(source)
+        marker = destination + ".sha256"
+        try:
+            if os.path.isfile(destination) and os.path.isfile(marker):
+                with open(marker, "r", encoding="ascii") as stream:
+                    if stream.read().strip() == source_hash:
+                        return destination
+        except OSError:
+            pass
+
+        temporary = destination + ".new"
+        shutil.copyfile(source, temporary)
+        os.replace(temporary, destination)
+        with open(marker, "w", encoding="ascii", newline="\n") as stream:
+            stream.write(source_hash + "\n")
+        logger.info("Staged AirPlay receiver at %s", destination)
+        return destination
+
+    @staticmethod
+    def _run_firewall_helper(executable, elevated):
+        import ctypes
+        from ctypes import wintypes
+
+        if not elevated:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0
+            try:
+                return subprocess.run(
+                    [executable, "--configure-firewall"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=15,
+                    startupinfo=startupinfo).returncode
+            except (OSError, subprocess.SubprocessError):
+                return -1
+
+        class ShellExecuteInfo(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("fMask", ctypes.c_ulong),
+                ("hwnd", wintypes.HWND),
+                ("lpVerb", wintypes.LPCWSTR),
+                ("lpFile", wintypes.LPCWSTR),
+                ("lpParameters", wintypes.LPCWSTR),
+                ("lpDirectory", wintypes.LPCWSTR),
+                ("nShow", ctypes.c_int),
+                ("hInstApp", wintypes.HINSTANCE),
+                ("lpIDList", wintypes.LPVOID),
+                ("lpClass", wintypes.LPCWSTR),
+                ("hkeyClass", wintypes.HKEY),
+                ("dwHotKey", wintypes.DWORD),
+                ("hIcon", wintypes.HANDLE),
+                ("hProcess", wintypes.HANDLE),
+            ]
+
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        shell32.ShellExecuteExW.argtypes = [
+            ctypes.POINTER(ShellExecuteInfo)]
+        shell32.ShellExecuteExW.restype = wintypes.BOOL
+        kernel32.WaitForSingleObject.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.GetExitCodeProcess.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        info = ShellExecuteInfo()
+        info.cbSize = ctypes.sizeof(info)
+        info.fMask = 0x00000040 | 0x00000100 | 0x00000400
+        info.lpVerb = "runas"
+        info.lpFile = executable
+        info.lpParameters = "--configure-firewall"
+        info.lpDirectory = os.path.dirname(executable)
+        info.nShow = 0
+        if not shell32.ShellExecuteExW(ctypes.byref(info)):
+            return -1
+        if not info.hProcess:
+            return -1
+        try:
+            if kernel32.WaitForSingleObject(info.hProcess, 60000) != 0:
+                return -1
+            code = wintypes.DWORD(1)
+            if not kernel32.GetExitCodeProcess(
+                    info.hProcess, ctypes.byref(code)):
+                return -1
+            return int(code.value)
+        finally:
+            kernel32.CloseHandle(info.hProcess)
+
+    def _ensure_firewall_locked(self, executable):
+        if sys.platform != "win32":
+            return True
+        try:
+            executable_hash = self._file_sha256(executable)
+        except OSError:
+            return False
+        marker = executable + ".firewall.sha256"
+        try:
+            with open(marker, "r", encoding="ascii") as stream:
+                if stream.read().strip() == executable_hash:
+                    return True
+        except OSError:
+            pass
+
+        result = self._run_firewall_helper(executable, elevated=False)
+        if result != 0:
+            result = self._run_firewall_helper(executable, elevated=True)
+        if result != 0:
+            logger.error(
+                "Unable to configure Windows Firewall for AirPlay: %s",
+                result)
+            return False
+        with open(marker, "w", encoding="ascii", newline="\n") as stream:
+            stream.write(executable_hash + "\n")
+        return True
 
     def restart(self):
         """Restart the receiver, even when it is currently stopped."""

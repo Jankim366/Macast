@@ -224,6 +224,26 @@ class AirPlayProcessManagerTests(unittest.TestCase):
             self.assertTrue(manager._startup_ready)
             self.assertEqual(manager.state, manager.RUNNING)
 
+    def test_frozen_backend_is_staged_at_a_stable_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, "_MEI123", "backend.exe")
+            working = os.path.join(directory, "Macast", "AirPlay-Windows")
+            os.makedirs(os.path.dirname(source))
+            with open(source, "wb") as stream:
+                stream.write(b"airplay-backend")
+
+            manager = self.manager(working_dir=working)
+            with mock.patch.object(
+                    AIRPLAY.sys, "frozen", True, create=True):
+                staged = manager._stage_executable_locked(source)
+
+            self.assertEqual(
+                staged,
+                os.path.join(working, manager.MACAST_BINARY_NAME))
+            self.assertTrue(os.path.isfile(staged))
+            with open(staged, "rb") as stream:
+                self.assertEqual(stream.read(), b"airplay-backend")
+
     def test_video_window_size_matches_portrait_aspect_ratio(self):
         width, height = AIRPLAY.AirPlayProcessManager.fit_window_to_video(
             1179, 2556, 1632, 918)

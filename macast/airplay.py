@@ -415,14 +415,12 @@ class AirPlayProcessManager:
     def _ensure_firewall_locked(self, executable):
         if sys.platform != "win32":
             return True
-        try:
-            executable_hash = self._file_sha256(executable)
-        except OSError:
-            return False
-        marker = executable + ".firewall.sha256"
+        firewall_identity = os.path.normcase(
+            os.path.abspath(executable))
+        marker = executable + ".firewall.allowed"
         try:
             with open(marker, "r", encoding="ascii") as stream:
-                if stream.read().strip() == executable_hash:
+                if stream.read().strip() == firewall_identity:
                     return True
         except OSError:
             pass
@@ -436,7 +434,7 @@ class AirPlayProcessManager:
                 result)
             return False
         with open(marker, "w", encoding="ascii", newline="\n") as stream:
-            stream.write(executable_hash + "\n")
+            stream.write(firewall_identity + "\n")
         return True
 
     def restart(self):

@@ -25,15 +25,19 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
 - DACP and mDNS both use the same physical LAN interface index. The LAN tests
   register a temporary receiver and verify that `_airplay._tcp.local` is
   immediately discoverable on that interface before packaging.
+- When the AirPlay control session uses a link-local IPv6 peer address, Macast
+  retains the interface scope (for example `fe80::...%26`) when connecting to
+  the resolved DACP port. Without the scope, Windows cannot reach the sender
+  even though mDNS resolution itself succeeds.
 - The one-file Macast build extracts to a different temporary directory each
   launch. Macast therefore copies the self-contained AirPlay executable to a
   stable path under `SETTING_DIR\AirPlay-Windows` and stores its source hash.
   Firewall rules are keyed to that stable executable path instead of the
   transient `_MEI...` copy.
-- On first use of a new backend hash, Macast invokes the receiver's
+- On first use of the stable backend path, Macast invokes the receiver's
   `--configure-firewall` helper. It may raise one UAC prompt. The helper adds a
   LocalSubnet inbound allow rule and disables stale per-executable Block rules;
-  later launches of the same backend do not prompt again.
+  later backend updates at that same path do not prompt again.
 - `Setting -> AirPlay Screen Mirroring` displays the process state and provides
   start, stop, restart, and show-window actions.
 - AirPlay-Windows starts hidden. Its standalone control interface does not open

@@ -96,7 +96,7 @@ index efb9bb1..ae0a27f 100644
      add_test(NAME firewall COMMAND test-firewall)
      add_test(NAME settings COMMAND test-settings)
 diff --git a/src/airplay/dacp_remote.cpp b/src/airplay/dacp_remote.cpp
-index 65538f1..0df3558 100644
+index 65538f1..3292027 100644
 --- a/src/airplay/dacp_remote.cpp
 +++ b/src/airplay/dacp_remote.cpp
 @@ -2,6 +2,7 @@
@@ -136,7 +136,7 @@ index 65538f1..0df3558 100644
      addrinfo hints{}, *addresses = nullptr;
      hints.ai_socktype = SOCK_STREAM;
      hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
-@@ -63,9 +77,16 @@ bool send_request(const std::string& ip, uint16_t port, const std::string& token
+@@ -63,9 +77,21 @@ bool send_request(const std::string& ip, uint16_t port, const std::string& token
      DWORD timeout = 500;
      setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
      setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
@@ -144,8 +144,13 @@ index 65538f1..0df3558 100644
 -    const std::string wire = std::string(post ? "POST" : "GET") + " /ctrl-int/1/" + path + " HTTP/1.1\r\nHost: " +
 -        host + ":" + port_string + "\r\nActive-Remote: " + token + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 +
++    std::string address_only = ip;
++    const auto scope = address_only.find('%');
++    if (scope != std::string::npos) address_only.resize(scope);
 +    const std::string address_host =
-+        ip.find(':') == std::string::npos ? ip : "[" + ip + "]";
++        address_only.find(':') == std::string::npos
++            ? address_only
++            : "[" + address_only + "]";
 +    const std::string host = !host_name.empty()
 +        ? host_name
 +        : address_host + ":" + port_string;
@@ -156,7 +161,7 @@ index 65538f1..0df3558 100644
      bool success = false;
      if (ap::net::send_all(fd, wire.data(), static_cast<int>(wire.size())) == static_cast<int>(wire.size())) {
          std::string line;
-@@ -88,7 +109,9 @@ bool send_request(const std::string& ip, uint16_t port, const std::string& token
+@@ -88,7 +114,9 @@ bool send_request(const std::string& ip, uint16_t port, const std::string& token
              status >> version >> code;
              success = version.rfind("HTTP/", 0) == 0 && code >= 200 && code < 300;
              LOG_INFO << "DACP media response status=" << code;
@@ -167,7 +172,7 @@ index 65538f1..0df3558 100644
      }
      ap::net::close_socket(fd);
      return success;
-@@ -100,38 +123,136 @@ struct DacpRemote::ResolveState {
+@@ -100,38 +128,136 @@ struct DacpRemote::ResolveState {
      std::mutex mutex;
      std::condition_variable cv;
      bool pending{true};
@@ -326,7 +331,7 @@ index 65538f1..0df3558 100644
          }
  #else
          (void)id;
-@@ -139,17 +260,29 @@ struct DacpRemote::ResolveState {
+@@ -139,17 +265,34 @@ struct DacpRemote::ResolveState {
  #endif
          return state;
      }
@@ -357,11 +362,16 @@ index 65538f1..0df3558 100644
 -DacpRemote::DacpRemote(std::string peer_ip) : peer_ip_(std::move(peer_ip)) {}
 +DacpRemote::DacpRemote(std::string peer_ip) : peer_ip_(std::move(peer_ip)) {
 +    interface_index_ = ap::net::primary_lan_interface().index;
++    if (interface_index_ && peer_ip_.find(':') != std::string::npos &&
++        peer_ip_.find('%') == std::string::npos &&
++        peer_ip_.rfind("fe80:", 0) == 0) {
++        peer_ip_ += "%" + std::to_string(interface_index_);
++    }
 +}
  DacpRemote::~DacpRemote() { if (resolve_) resolve_->cancel_query(); }
  void DacpRemote::update(const std::string& id, const std::string& token, bool audio_only, const std::string& session_id) {
      std::lock_guard<std::mutex> lock(mutex_);
-@@ -160,7 +293,10 @@ void DacpRemote::update(const std::string& id, const std::string& token, bool au
+@@ -160,7 +303,10 @@ void DacpRemote::update(const std::string& id, const std::string& token, bool au
          if (resolve_) resolve_->cancel_query();
          resolve_.reset();
          dacp_id_ = hex_id(id) ? id : std::string{};
@@ -373,7 +383,7 @@ index 65538f1..0df3558 100644
      }
  }
  bool DacpRemote::available(const std::string& session_id) {
-@@ -186,19 +322,26 @@ bool DacpRemote::send(MediaCommand command, uint32_t position_ms, const std::str
+@@ -186,19 +332,26 @@ bool DacpRemote::send(MediaCommand command, uint32_t position_ms, const std::str
      std::unique_lock<std::mutex> lock(state->mutex);
      state->cv.wait_for(lock, std::chrono::milliseconds(750), [&] { return !state->pending; });
      const uint16_t port = state->port;

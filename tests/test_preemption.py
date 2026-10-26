@@ -98,13 +98,15 @@ class PreemptionTests(unittest.TestCase):
         manager.device_name = "Phone"
         app.bluetooth_audio_manager = manager
 
-        app.on_bluetooth_audio_state_changed({
-            "state": manager.CONNECTED,
-            "message": "connected",
-        })
+        with mock.patch("macast.macast.Setting.set") as save_setting:
+            app.on_bluetooth_audio_state_changed({
+                "state": manager.CONNECTED,
+                "message": "connected",
+            })
 
         app.airplay_manager.send_media_command.assert_called_once_with(
             "preempt")
         renderer.set_media_stop.assert_called_once_with()
         protocol.set_state_stop.assert_called_once_with()
         self.assertTrue(app.bluetooth_owns_output)
+        save_setting.assert_called_once()

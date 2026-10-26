@@ -81,6 +81,9 @@ This fork extends Macast with an independent
 - AirPlay autostart waits for a previous instance to release its mutex and
   reports `Running` only after both `_airplay` and `_raop` mDNS registrations
   succeed. Early exits and failed registrations are retried automatically.
+- AirPlay publishing is pinned to the physical Wi-Fi/Ethernet interface and its
+  real IPv4/MAC address. FlClash, ZeroTier and VPN adapters are not allowed to
+  capture the AirPlay mDNS record; DACP browsing uses the same LAN interface.
 - During mirroring, a standard Windows video window is shown with native
   minimize, maximize, and close controls.
 - The video window follows the current portrait or landscape aspect ratio.

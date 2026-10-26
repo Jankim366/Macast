@@ -18,6 +18,13 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
   registrations report success. A receiver that exits or fails to publish its
   services during this startup window is retried automatically instead of
   leaving AirPlay stopped until a manual restart.
+- Windows mDNS registration is bound to the selected physical LAN interface,
+  including its concrete IPv4 address and interface index. Proxy, VPN,
+  container and other virtual adapters are skipped, so a FlClash/ZeroTier
+  route cannot publish AirPlay only on `198.18.0.1` or `10.147.x.x`.
+- DACP and mDNS both use the same physical LAN interface index. The LAN tests
+  register a temporary receiver and verify that `_airplay._tcp.local` is
+  immediately discoverable on that interface before packaging.
 - `Setting -> AirPlay Screen Mirroring` displays the process state and provides
   start, stop, restart, and show-window actions.
 - AirPlay-Windows starts hidden. Its standalone control interface does not open

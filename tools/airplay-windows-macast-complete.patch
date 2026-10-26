@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index efb9bb1..285320b 100644
+index efb9bb1..ae0a27f 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -332,6 +332,7 @@ add_executable(airplay-windows
@@ -48,11 +48,32 @@ index efb9bb1..285320b 100644
  # ---- Avahi (optional, Linux only — dev-mode mDNS) ----------------------------
  # Lets the receiver auto-appear on iOS when launched from a Linux host for
  # hacking / testing. Windows uses the native dnsapi above.
-@@ -514,6 +510,25 @@ if(BUILD_NETWORK_TESTS)
+@@ -514,6 +510,46 @@ if(BUILD_NETWORK_TESTS)
          find_package(Threads REQUIRED)
          target_link_libraries(test-shutdown PRIVATE Threads::Threads)
      endif()
 +    if(WIN32)
++        add_executable(test-mdns-lan
++            tools/test_mdns_lan.cpp
++            src/mdns/mdns_service.cpp
++            src/net/socket.cpp
++            src/log.cpp)
++        target_include_directories(test-mdns-lan PRIVATE src)
++        target_link_libraries(test-mdns-lan PRIVATE
++            ws2_32 iphlpapi dnsapi)
++        add_test(NAME mdns-lan COMMAND test-mdns-lan)
++
++        add_executable(test-lan-interface
++            tools/test_lan_interface.cpp
++            src/net/socket.cpp
++            src/log.cpp)
++        target_include_directories(test-lan-interface PRIVATE src)
++        target_link_libraries(test-lan-interface PRIVATE ws2_32 iphlpapi)
++        add_test(NAME lan-interface COMMAND test-lan-interface)
++
++        add_executable(test-dacp-browse tools/test_dacp_browse.cpp)
++        target_link_libraries(test-dacp-browse PRIVATE ws2_32 dnsapi)
++
 +        add_executable(test-audio-output
 +            tools/test_audio_output.cpp
 +            src/audio/audio_output.cpp
@@ -75,7 +96,7 @@ index efb9bb1..285320b 100644
      add_test(NAME firewall COMMAND test-firewall)
      add_test(NAME settings COMMAND test-settings)
 diff --git a/src/airplay/dacp_remote.cpp b/src/airplay/dacp_remote.cpp
-index 65538f1..3a2eb44 100644
+index 65538f1..0df3558 100644
 --- a/src/airplay/dacp_remote.cpp
 +++ b/src/airplay/dacp_remote.cpp
 @@ -2,6 +2,7 @@
@@ -146,7 +167,7 @@ index 65538f1..3a2eb44 100644
      }
      ap::net::close_socket(fd);
      return success;
-@@ -100,38 +123,131 @@ struct DacpRemote::ResolveState {
+@@ -100,38 +123,136 @@ struct DacpRemote::ResolveState {
      std::mutex mutex;
      std::condition_variable cv;
      bool pending{true};
@@ -201,7 +222,8 @@ index 65538f1..3a2eb44 100644
 +
 +    static void start_resolve(
 +        const std::shared_ptr<ResolveState>& state,
-+        const std::wstring& full_name) {
++        const std::wstring& full_name,
++        DWORD interface_index) {
 +        {
 +            std::lock_guard<std::mutex> lock(state->mutex);
 +            if (state->port != 0 || state->resolving) return;
@@ -209,7 +231,7 @@ index 65538f1..3a2eb44 100644
 +            state->resolve_service = full_name;
 +            state->resolve_request = {};
 +            state->resolve_request.Version = DNS_QUERY_REQUEST_VERSION1;
-+            state->resolve_request.InterfaceIndex = 0;
++            state->resolve_request.InterfaceIndex = interface_index;
 +            state->resolve_request.QueryName =
 +                const_cast<PWSTR>(state->resolve_service.c_str());
 +            state->resolve_request.pResolveCompletionCallback = &completed;
@@ -255,13 +277,17 @@ index 65538f1..3a2eb44 100644
 +            }
 +            LOG_INFO << "DACP browser found "
 +                     << wide_to_utf8(service_name.c_str());
-+            start_resolve(state, service_name);
++            start_resolve(
++                state, service_name,
++                state->browse_request.InterfaceIndex);
 +            break;
 +        }
      }
  #endif
+-    static std::shared_ptr<ResolveState> start(const std::string& id) {
 +
-     static std::shared_ptr<ResolveState> start(const std::string& id) {
++    static std::shared_ptr<ResolveState> start(
++        const std::string& id, DWORD interface_index) {
          auto state = std::make_shared<ResolveState>();
  #if defined(_WIN32)
 -        const std::string name = "iTunes_Ctrl_" + id + "._dacp._tcp.local";
@@ -279,7 +305,7 @@ index 65538f1..3a2eb44 100644
 +            "iTunes_Ctrl_" + id + "._dacp._tcp.local";
 +        state->target_service.assign(name.begin(), name.end());
 +        state->browse_request.Version = DNS_QUERY_REQUEST_VERSION1;
-+        state->browse_request.InterfaceIndex = 0;
++        state->browse_request.InterfaceIndex = interface_index;
 +        state->browse_request.QueryName = L"_dacp._tcp.local";
 +        state->browse_request.pBrowseCallback = &browse_completed;
 +        state->browse_request.pQueryContext =
@@ -295,11 +321,12 @@ index 65538f1..3a2eb44 100644
 +            state->browse_request.pQueryContext = nullptr;
 +            LOG_WARN << "DACP browser could not start: " << status
 +                     << " (using direct resolve)";
-+            start_resolve(state, state->target_service);
++            start_resolve(
++                state, state->target_service, interface_index);
          }
  #else
          (void)id;
-@@ -139,12 +255,22 @@ struct DacpRemote::ResolveState {
+@@ -139,17 +260,29 @@ struct DacpRemote::ResolveState {
  #endif
          return state;
      }
@@ -326,7 +353,27 @@ index 65538f1..3a2eb44 100644
  #endif
      }
  };
-@@ -186,19 +312,26 @@ bool DacpRemote::send(MediaCommand command, uint32_t position_ms, const std::str
+ 
+-DacpRemote::DacpRemote(std::string peer_ip) : peer_ip_(std::move(peer_ip)) {}
++DacpRemote::DacpRemote(std::string peer_ip) : peer_ip_(std::move(peer_ip)) {
++    interface_index_ = ap::net::primary_lan_interface().index;
++}
+ DacpRemote::~DacpRemote() { if (resolve_) resolve_->cancel_query(); }
+ void DacpRemote::update(const std::string& id, const std::string& token, bool audio_only, const std::string& session_id) {
+     std::lock_guard<std::mutex> lock(mutex_);
+@@ -160,7 +293,10 @@ void DacpRemote::update(const std::string& id, const std::string& token, bool au
+         if (resolve_) resolve_->cancel_query();
+         resolve_.reset();
+         dacp_id_ = hex_id(id) ? id : std::string{};
+-        if (!dacp_id_.empty()) resolve_ = ResolveState::start(dacp_id_);
++        if (!dacp_id_.empty()) {
++            resolve_ = ResolveState::start(
++                dacp_id_, interface_index_);
++        }
+     }
+ }
+ bool DacpRemote::available(const std::string& session_id) {
+@@ -186,19 +322,26 @@ bool DacpRemote::send(MediaCommand command, uint32_t position_ms, const std::str
      std::unique_lock<std::mutex> lock(state->mutex);
      state->cv.wait_for(lock, std::chrono::milliseconds(750), [&] { return !state->pending; });
      const uint16_t port = state->port;
@@ -354,6 +401,18 @@ index 65538f1..3a2eb44 100644
  #else
      (void)command; (void)position_ms;
      return false;
+diff --git a/src/airplay/dacp_remote.h b/src/airplay/dacp_remote.h
+index 78b3cde..27ff374 100644
+--- a/src/airplay/dacp_remote.h
++++ b/src/airplay/dacp_remote.h
+@@ -19,6 +19,7 @@ private:
+     std::mutex mutex_;
+     std::string dacp_id_, active_remote_, session_id_;
+     bool audio_only_{false};
++    uint32_t interface_index_{0};
+     std::shared_ptr<ResolveState> resolve_;
+ };
+ }
 diff --git a/src/airplay/media_control.h b/src/airplay/media_control.h
 index 2dd9f82..6f37069 100644
 --- a/src/airplay/media_control.h
@@ -562,7 +621,7 @@ index 0b2ab2b..c803c14 100644
      return true;
  }
 diff --git a/src/main.cpp b/src/main.cpp
-index 71c0f07..89317cf 100644
+index 71c0f07..f1df844 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -18,6 +18,7 @@
@@ -611,7 +670,23 @@ index 71c0f07..89317cf 100644
              ap::net::global_shutdown();
              return 0;
          }
-@@ -274,7 +283,7 @@ int main(int argc, char** argv) {
+@@ -262,9 +271,13 @@ int main(int argc, char** argv) {
+     LOG_INFO << "=== AirPlay-Windows skeleton ===";
+     LOG_INFO << "name="     << ctx.name;
+     LOG_INFO << "deviceid=" << ctx.deviceid;
+-    const std::string local_ip   = ap::net::primary_ipv4();
+-    const std::string local_ipv6 = ap::net::primary_ipv6();
++    const auto lan = ap::net::primary_lan_interface();
++    const std::string local_ip =
++        lan.ipv4.empty() ? ap::net::primary_ipv4() : lan.ipv4;
++    const std::string local_ipv6 =
++        lan.ipv6.empty() ? ap::net::primary_ipv6() : lan.ipv6;
+     LOG_INFO << "ip="       << local_ip;
++    LOG_INFO << "LAN interface index=" << lan.index;
+     if (!local_ipv6.empty()) {
+         LOG_INFO << "ipv6="  << local_ipv6;
+     }
+@@ -274,7 +287,7 @@ int main(int argc, char** argv) {
      // frames once an iPhone connects.
      ap::video::VideoRenderer renderer;
      renderer.set_live_settings(&live_settings);
@@ -620,7 +695,7 @@ index 71c0f07..89317cf 100644
          LOG_WARN << "VideoRenderer could not start — running headless";
      }
      // Prefer the v4 address on the idle screen (shorter, more familiar),
-@@ -305,12 +314,19 @@ int main(int argc, char** argv) {
+@@ -305,12 +318,19 @@ int main(int argc, char** argv) {
      struct AudioRequest { ap::airplay::MediaCommand command; uint32_t position; std::string session_id; };
      std::mutex audio_request_mutex;
      std::optional<AudioRequest> audio_request;
@@ -642,7 +717,7 @@ index 71c0f07..89317cf 100644
  
      // Local HTTP proxy + libavformat player only when the HLS path is
      // opted into. In the default (mirror + RAOP) mode nothing connects
-@@ -370,7 +386,10 @@ int main(int argc, char** argv) {
+@@ -370,7 +390,10 @@ int main(int argc, char** argv) {
          }
          ap::video::VideoRenderer::DeviceInfo current_device;
          renderer.active_device_snapshot(current_device);
@@ -654,7 +729,7 @@ index 71c0f07..89317cf 100644
          const auto current_settings = ap::snapshot(live_settings);
          const auto settings_now = std::chrono::steady_clock::now();
          if (!(current_settings == observed_settings)) {
-@@ -387,6 +406,7 @@ int main(int argc, char** argv) {
+@@ -387,6 +410,7 @@ int main(int argc, char** argv) {
  
      LOG_INFO << "Shutting down... (g_stop=" << g_stop.load()
               << " user_closed=" << renderer.user_closed() << ")";
@@ -662,6 +737,263 @@ index 71c0f07..89317cf 100644
      // Withdraw discovery and interrupt sessions before stopping peripherals.
      server.stop();
      mdns.stop();
+diff --git a/src/mdns/mdns_service.cpp b/src/mdns/mdns_service.cpp
+index ff63e26..793cc38 100644
+--- a/src/mdns/mdns_service.cpp
++++ b/src/mdns/mdns_service.cpp
+@@ -1,5 +1,6 @@
+ #include "mdns/mdns_service.h"
+ #include "log.h"
++#include "net/socket.h"
+ 
+ #include <atomic>
+ #include <chrono>
+@@ -12,6 +13,7 @@
+ #include <vector>
+ 
+ #if defined(_WIN32)
++    #include <ws2tcpip.h>
+     #include <windows.h>
+     #include <windns.h>
+     #pragma comment(lib, "dnsapi.lib")
+@@ -54,6 +56,9 @@ struct RegisteredService {
+     std::vector<std::wstring> values;
+     std::vector<PWSTR>        key_ptrs;
+     std::vector<PWSTR>        value_ptrs;
++    IP4_ADDRESS               ipv4_address{};
++    bool                      has_ipv4{false};
++    DWORD                     interface_index{0};
+     DNS_SERVICE_INSTANCE      instance{};
+     DNS_SERVICE_CANCEL        cancel{};
+     DNS_SERVICE_REGISTER_REQUEST request{};
+@@ -100,6 +105,9 @@ struct MdnsService::Impl {
+         s.instance = {};
+         s.instance.pszInstanceName = s.instance_name.data();
+         s.instance.pszHostName = s.host_name.data();
++        s.instance.ip4Address =
++            s.has_ipv4 ? &s.ipv4_address : nullptr;
++        s.instance.dwInterfaceIndex = s.interface_index;
+         s.instance.wPort = port;
+         s.instance.dwPropertyCount = static_cast<DWORD>(s.keys.size());
+         s.instance.keys = s.key_ptrs.data();
+@@ -161,6 +169,20 @@ struct MdnsService::Impl {
+             return false;
+         }
+         std::wstring local_host = std::wstring(host) + L".local";
++        const ap::net::LanInterface lan =
++            ap::net::primary_lan_interface();
++        IP4_ADDRESS lan_ipv4{};
++        const bool has_lan_ipv4 =
++            !lan.ipv4.empty() &&
++            InetPtonA(AF_INET, lan.ipv4.c_str(), &lan_ipv4) == 1;
++        LOG_INFO << "mDNS LAN interface index=" << lan.index
++                 << " ipv4=" << (has_lan_ipv4 ? lan.ipv4 : "auto");
++        auto configure_interface =
++            [&](const std::shared_ptr<RegisteredService>& service) {
++                service->has_ipv4 = has_lan_ipv4;
++                service->ipv4_address = lan_ipv4;
++                service->interface_index = lan.index;
++            };
+ 
+         // Hex-encode the Ed25519 public key for the `pk` TXT value (64
+         // chars for 32 bytes). iOS uses it to match the receiver
+@@ -177,6 +199,7 @@ struct MdnsService::Impl {
+ 
+         // ---- _airplay._tcp --------------------------------------------------
+         airplay->host_name     = local_host;
++        configure_interface(airplay);
+         airplay->instance_name = widen(ctx.name) + L"._airplay._tcp.local";
+         airplay->keys          = { L"deviceid", L"features", L"flags", L"model",
+                                   L"pi", L"pk", L"pw", L"srcvers", L"vv" };
+@@ -194,6 +217,7 @@ struct MdnsService::Impl {
+         std::string raop_name = hex + "@" + ctx.name;
+ 
+         raop->host_name     = local_host;
++        configure_interface(raop);
+         raop->instance_name = widen(raop_name) + L"._raop._tcp.local";
+         raop->keys          = { L"txtvers", L"ch",  L"cn",  L"da", L"et",
+                                L"ft",      L"md",  L"am",  L"rhd", L"pk",
+diff --git a/src/net/socket.cpp b/src/net/socket.cpp
+index 83ac2a9..b74dc2c 100644
+--- a/src/net/socket.cpp
++++ b/src/net/socket.cpp
+@@ -1,8 +1,11 @@
+ #include "net/socket.h"
+ #include "log.h"
+ 
++#include <algorithm>
++#include <cctype>
+ #include <cstdio>
+ #include <cstring>
++#include <iterator>
+ #include <vector>
+ 
+ #if defined(_WIN32)
+@@ -200,11 +203,142 @@ std::string primary_ipv6() {
+ 
+ #if defined(_WIN32)
+ 
++namespace {
++
++std::string lower_ascii(std::string value) {
++    std::transform(value.begin(), value.end(), value.begin(),
++        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++    return value;
++}
++
++bool is_private_ipv4(const sockaddr_in& address) {
++    const uint32_t value = ntohl(address.sin_addr.s_addr);
++    return (value & 0xFF000000U) == 0x0A000000U ||
++           (value & 0xFFF00000U) == 0xAC100000U ||
++           (value & 0xFFFF0000U) == 0xC0A80000U;
++}
++
++bool looks_virtual_adapter(const std::string& description,
++                           const std::string& friendly_name) {
++    const std::string text =
++        lower_ascii(description + " " + friendly_name);
++    static const char* blocked[] = {
++        "virtual", "vpn", "vethernet", "hyper-v", "tap-", "wireguard",
++        "zerotier", "clash", "todesk", "wsl", "loopback"
++    };
++    return std::any_of(std::begin(blocked), std::end(blocked),
++        [&](const char* word) { return text.find(word) != std::string::npos; });
++}
++
++std::string narrow_wide(const wchar_t* value) {
++    if (!value || !*value) return {};
++    const int size = WideCharToMultiByte(
++        CP_UTF8, 0, value, -1, nullptr, 0, nullptr, nullptr);
++    if (size <= 1) return {};
++    std::string out(static_cast<std::size_t>(size - 1), '\0');
++    WideCharToMultiByte(
++        CP_UTF8, 0, value, -1, out.data(), size, nullptr, nullptr);
++    return out;
++}
++
++std::string adapter_mac(const IP_ADAPTER_ADDRESSES& adapter) {
++    if (adapter.PhysicalAddressLength != 6) return {};
++    char value[18]{};
++    std::snprintf(value, sizeof(value), "%02X:%02X:%02X:%02X:%02X:%02X",
++        adapter.PhysicalAddress[0], adapter.PhysicalAddress[1],
++        adapter.PhysicalAddress[2], adapter.PhysicalAddress[3],
++        adapter.PhysicalAddress[4], adapter.PhysicalAddress[5]);
++    return value;
++}
++
++} // namespace
++
++LanInterface primary_lan_interface() {
++    LanInterface best;
++    int best_score = -1;
++
++    ULONG size = 16 * 1024;
++    std::vector<unsigned char> buf(size);
++    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data());
++    DWORD rc = GetAdaptersAddresses(
++        AF_UNSPEC,
++        GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
++            GAA_FLAG_SKIP_DNS_SERVER,
++        nullptr, adapters, &size);
++    if (rc == ERROR_BUFFER_OVERFLOW) {
++        buf.resize(size);
++        adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data());
++        rc = GetAdaptersAddresses(
++            AF_UNSPEC,
++            GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
++                GAA_FLAG_SKIP_DNS_SERVER,
++            nullptr, adapters, &size);
++    }
++    if (rc != NO_ERROR) return best;
++
++    for (auto* adapter = adapters; adapter; adapter = adapter->Next) {
++        if (adapter->OperStatus != IfOperStatusUp ||
++            adapter->IfType != IF_TYPE_IEEE80211 &&
++            adapter->IfType != IF_TYPE_ETHERNET_CSMACD) {
++            continue;
++        }
++
++        const std::string description =
++            narrow_wide(adapter->Description);
++        const std::string friendly =
++            narrow_wide(adapter->FriendlyName);
++        if (looks_virtual_adapter(description, friendly)) continue;
++
++        LanInterface candidate;
++        candidate.index = adapter->IfIndex;
++        candidate.mac = adapter_mac(*adapter);
++        bool has_private_ipv4 = false;
++        for (auto* unicast = adapter->FirstUnicastAddress;
++             unicast; unicast = unicast->Next) {
++            const sockaddr* address = unicast->Address.lpSockaddr;
++            if (!address) continue;
++            char text[INET6_ADDRSTRLEN]{};
++            if (address->sa_family == AF_INET) {
++                const auto* v4 =
++                    reinterpret_cast<const sockaddr_in*>(address);
++                if (!is_private_ipv4(*v4)) continue;
++                inet_ntop(AF_INET, &v4->sin_addr, text, sizeof(text));
++                candidate.ipv4 = text;
++                has_private_ipv4 = true;
++            } else if (address->sa_family == AF_INET6 &&
++                       candidate.ipv6.empty()) {
++                const auto* v6 =
++                    reinterpret_cast<const sockaddr_in6*>(address);
++                if (IN6_IS_ADDR_LINKLOCAL(&v6->sin6_addr) ||
++                    IN6_IS_ADDR_LOOPBACK(&v6->sin6_addr)) {
++                    continue;
++                }
++                inet_ntop(AF_INET6, &v6->sin6_addr, text, sizeof(text));
++                candidate.ipv6 = text;
++            }
++        }
++
++        if (candidate.ipv4.empty()) continue;
++        int score = adapter->IfType == IF_TYPE_IEEE80211 ? 100 : 80;
++        if (has_private_ipv4) score += 20;
++        if (adapter->FirstGatewayAddress) score += 30;
++        if (!candidate.mac.empty()) score += 10;
++        if (score > best_score) {
++            best_score = score;
++            best = std::move(candidate);
++        }
++    }
++    return best;
++}
++
+ std::string primary_ipv4() {
+     return primary_ipv4_via_route();
+ }
+ 
+ std::string primary_mac() {
++    const LanInterface lan = primary_lan_interface();
++    if (!lan.mac.empty()) return lan.mac;
++
+     // Find the adapter whose IP (v4 or v6) matches the one we advertise
+     // and return its MAC. iOS correlates `deviceid` (MAC) with the RTSP
+     // socket's local IP, so the two must come from the same interface.
+diff --git a/src/net/socket.h b/src/net/socket.h
+index 1d41bbe..6eb868f 100644
+--- a/src/net/socket.h
++++ b/src/net/socket.h
+@@ -48,6 +48,17 @@ std::string primary_ipv4();
+ // discovery and we need to know we're reachable that way.
+ std::string primary_ipv6();
+ 
++// LAN-facing physical interface used for AirPlay discovery. Virtual proxy,
++// VPN, container and loopback adapters are excluded so mDNS and the advertised
++// IPv4 address stay on the Wi-Fi/Ethernet network used by the sender.
++struct LanInterface {
++    std::string ipv4;
++    std::string ipv6;
++    std::string mac;
++    uint32_t index = 0;
++};
++LanInterface primary_lan_interface();
++
+ // Returns a MAC-like 6-byte device id as uppercase "AA:BB:CC:DD:EE:FF".
+ // AirPlay uses this as the `deviceid` field in the mDNS TXT record and as
+ // part of the service name. We derive it from the first usable NIC MAC.
 diff --git a/src/video/video_renderer.cpp b/src/video/video_renderer.cpp
 index 426a93a..b6a5a66 100644
 --- a/src/video/video_renderer.cpp

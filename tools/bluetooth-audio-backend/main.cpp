@@ -65,6 +65,7 @@ AudioPlaybackConnection g_connection{nullptr};
 winrt::event_token g_state_token{};
 uint64_t g_generation = 0;
 std::size_t g_auto_device_index = 0;
+std::wstring g_auto_preferred_device;
 std::thread g_auto_thread;
 DeviceWatcher g_device_watcher{nullptr};
 std::map<std::wstring, DeviceRecord> g_known_devices;
@@ -449,6 +450,17 @@ void auto_connection_loop() {
         }
 
         if (!devices.empty()) {
+            if (!g_auto_preferred_device.empty()) {
+                const auto preferred = std::find_if(
+                    devices.begin(), devices.end(),
+                    [](const DeviceRecord& device) {
+                        return device.id == g_auto_preferred_device;
+                    });
+                if (preferred != devices.end()) {
+                    std::rotate(
+                        devices.begin(), preferred, preferred + 1);
+                }
+            }
             const std::size_t count = devices.size();
             for (std::size_t attempt = 0;
                  attempt < count && g_auto_mode.load() && !g_stop.load();
@@ -466,6 +478,7 @@ void auto_connection_loop() {
                 }
                 log_line("Bluetooth auto-connect failed: " + error);
             }
+            std::this_thread::sleep_for(std::chrono::seconds(8));
         }
 
         for (int i = 0; i < 20 && g_auto_mode.load() && !g_stop.load(); ++i) {
@@ -521,6 +534,16 @@ std::string handle_command(const std::string& command) {
         return "OK\n";
     }
     if (command == "AUTO ON") {
+        start_auto_mode();
+        return "OK\n";
+    }
+    if (command.rfind("AUTO PREF ", 0) == 0) {
+        std::string preferred;
+        if (!hex_decode(command.substr(10), preferred)) {
+            return "ERR invalid preferred device\n";
+        }
+        g_auto_preferred_device =
+            wide(winrt::to_hstring(preferred));
         start_auto_mode();
         return "OK\n";
     }

@@ -94,6 +94,7 @@ class PreemptionTests(unittest.TestCase):
         manager.STOPPED = BluetoothAudioProcessManager.STOPPED
         manager.ERROR = BluetoothAudioProcessManager.ERROR
         manager.MISSING = BluetoothAudioProcessManager.MISSING
+        manager.device_id = "bluetooth-device"
         manager.device_name = "Phone"
         app.bluetooth_audio_manager = manager
 

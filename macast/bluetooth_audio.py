@@ -147,7 +147,7 @@ class BluetoothAudioProcessManager:
                         return resolved
         return None
 
-    def start(self):
+    def start(self, preferred_device=None):
         executable = self.discover_executable(
             self._configured_executable, env=self._env)
         with self._lock:
@@ -202,7 +202,13 @@ class BluetoothAudioProcessManager:
                     "Bluetooth audio backend exited during startup")
                 return False
             if self.send_command("PING")[0]:
-                self.send_command("AUTO ON")
+                preferred = preferred_device or ""
+                if preferred:
+                    self.send_command(
+                        "AUTO PREF {}".format(
+                            preferred.encode("utf-8").hex().upper()))
+                else:
+                    self.send_command("AUTO ON")
                 self._set_state(self.READY, "Bluetooth audio receiver is ready")
                 self.refresh_devices()
                 self._ensure_monitor()

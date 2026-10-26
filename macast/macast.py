@@ -732,6 +732,10 @@ class Macast(App):
 
         if state == manager.CONNECTED and not self.bluetooth_owns_output:
             self.bluetooth_owns_output = True
+            if manager.device_id:
+                Setting.set(
+                    SettingProperty.BluetoothAudioDevice,
+                    manager.device_id)
             self.cancel_airplay_resume()
             self.suspend_or_preempt_airplay(
                 "Bluetooth", manager.device_name)
@@ -848,7 +852,9 @@ class Macast(App):
         manager = self.bluetooth_audio_manager
         if manager is None:
             return False
-        if not manager.start():
+        preferred_device = Setting.get(
+            SettingProperty.BluetoothAudioDevice, "")
+        if not manager.start(preferred_device=preferred_device):
             if not auto:
                 self.notification(_("Bluetooth Audio"), manager.message)
             return False

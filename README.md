@@ -78,6 +78,9 @@ This fork extends Macast with an independent
 - DLNA and AirPlay can run at the same time.
 - The original Macast tray/menu and web settings remain the control interface.
 - AirPlay-Windows starts hidden, so it does not open a second management UI.
+- AirPlay autostart waits for a previous instance to release its mutex and
+  reports `Running` only after both `_airplay` and `_raop` mDNS registrations
+  succeed. Early exits and failed registrations are retried automatically.
 - During mirroring, a standard Windows video window is shown with native
   minimize, maximize, and close controls.
 - The video window follows the current portrait or landscape aspect ratio.

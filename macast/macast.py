@@ -278,7 +278,7 @@ class Macast(App):
         if Setting.get(
                 SettingProperty.AirPlayEnabled,
                 1 if sys.platform == 'win32' else 0):
-            self.start_airplay(auto=True)
+            self._start_airplay_on_launch()
         logger.debug("Macast APP started")
 
     def build_app_menu(self):
@@ -568,6 +568,24 @@ class Macast(App):
                 _("AirPlay"),
                 self.airplay_manager.message)
         return False
+
+    def _start_airplay_on_launch(self):
+        """Start AirPlay after the tray/service bootstrap has settled.
+
+        A quick Macast restart can overlap with the previous AirPlay child
+        releasing its single-instance mutex. Starting this from a short-lived
+        worker lets the manager wait for that hand-off without blocking the
+        tray icon and CherryPy bootstrap.
+        """
+        def delayed_start():
+            time.sleep(0.75)
+            if Setting.get(SettingProperty.AirPlayEnabled, 0):
+                self.start_airplay(auto=True)
+
+        threading.Thread(
+            target=delayed_start,
+            name="AIRPLAY_AUTOSTART",
+            daemon=True).start()
 
     def stop_airplay(self):
         self.airplay_manager.stop()

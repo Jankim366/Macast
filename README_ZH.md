@@ -104,6 +104,9 @@ AirPlay 屏幕镜像与音频接收进程的部署、配置和验证方式见
 - DLNA 与 AirPlay 可以同时运行。
 - 控制界面仍然是原版 Macast，不使用 AirPlay-Windows 的首页和导航。
 - AirPlay-Windows 在后台隐藏启动，不再弹出自己的管理窗口。
+- Macast 启动后会等待上一实例退出并确认 `_airplay`、`_raop` 两项 mDNS
+  服务注册成功，才开始显示 `Running`；启动阶段异常退出或未能发布服务时会
+  自动重试，避免每次重启 Macast 都要手动点“重启 AirPlay”。
 - 开始镜像时显示标准 Windows 视频窗口，带原生最小化、最大化和关闭按钮。
 - 镜像窗口始终匹配当前视频比例；拖动上下边和左右边时会按实际拖动方向缩放。
 - AirPlay 设备名称沿用 Macast 原版的 friendly name。

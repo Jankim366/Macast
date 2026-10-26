@@ -206,6 +206,24 @@ class AirPlayProcessManagerTests(unittest.TestCase):
                 manager.normalize_receiver_name("Macast.Test\\Room"),
                 "MacastTestRoom")
 
+    def test_mdns_registration_marks_startup_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = os.path.join(directory, "airplay.log")
+            manager = self.manager(log_path=log_path)
+            manager._desired_running = True
+            manager._state = manager.STARTING
+            manager._startup_ready = False
+            manager._startup_deadline = time.monotonic() + 10
+
+            with open(log_path, "a", encoding="utf-8") as stream:
+                stream.write(
+                    "mDNS register: device._raop._tcp.local status=0\n"
+                    "mDNS register: device._airplay._tcp.local status=0\n")
+
+            manager._read_mirror_events_locked(object())
+            self.assertTrue(manager._startup_ready)
+            self.assertEqual(manager.state, manager.RUNNING)
+
     def test_video_window_size_matches_portrait_aspect_ratio(self):
         width, height = AIRPLAY.AirPlayProcessManager.fit_window_to_video(
             1179, 2556, 1632, 918)

@@ -11,6 +11,13 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
 
 - Macast starts AirPlay-Windows when `AirPlayEnabled` is enabled and the
   executable can be found.
+- Autostart is scheduled just after tray and service bootstrap. If a previous
+  receiver is still releasing `Local\AirPlay-Windows.Instance.v1`, Macast
+  waits for it before launching the replacement.
+- The menu remains in `Starting` until both `_airplay` and `_raop` mDNS
+  registrations report success. A receiver that exits or fails to publish its
+  services during this startup window is retried automatically instead of
+  leaving AirPlay stopped until a manual restart.
 - `Setting -> AirPlay Screen Mirroring` displays the process state and provides
   start, stop, restart, and show-window actions.
 - AirPlay-Windows starts hidden. Its standalone control interface does not open

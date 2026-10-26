@@ -45,6 +45,8 @@ class AirPlayProcessManager:
             media_callback=None,
             max_restart_attempts=3,
             restart_delay=1.0,
+            startup_timeout=10.0,
+            instance_wait_timeout=8.0,
             shutdown_timeout=5.0,
             poll_interval=0.5,
             status_callback=None,
@@ -63,6 +65,9 @@ class AirPlayProcessManager:
         self.media_callback = media_callback
         self.max_restart_attempts = max(0, int(max_restart_attempts))
         self.restart_delay = max(0.0, float(restart_delay))
+        self.startup_timeout = max(1.0, float(startup_timeout))
+        self.instance_wait_timeout = max(
+            0.0, float(instance_wait_timeout))
         self.shutdown_timeout = max(0.1, float(shutdown_timeout))
         self.poll_interval = max(0.05, float(poll_interval))
         self.status_callback = status_callback
@@ -77,6 +82,9 @@ class AirPlayProcessManager:
         self._log_file = None
         self._windows_job = None
         self._process_started_at = None
+        self._startup_ready = False
+        self._startup_deadline = None
+        self._mdns_registered = set()
         self._log_read_offset = 0
         self._window_shown_for_session = False
         self._window_user_visible = False
@@ -239,11 +247,19 @@ class AirPlayProcessManager:
                     "Macast-compatible AirPlay-Windows build was not found")
                 return False
             if self._external_instance_running(executable):
-                self._desired_running = False
                 self._set_status(
-                    self.ERROR,
-                    "AirPlay-Windows is already running outside Macast")
-                return False
+                    self.STARTING,
+                    "Waiting for the previous AirPlay instance to exit")
+                deadline = time.monotonic() + self.instance_wait_timeout
+                while self._external_instance_running(executable) and \
+                        time.monotonic() < deadline:
+                    time.sleep(0.2)
+                if self._external_instance_running(executable):
+                    self._desired_running = False
+                    self._set_status(
+                        self.ERROR,
+                        "AirPlay-Windows is already running outside Macast")
+                    return False
 
             self.executable = executable
             self._desired_running = True
@@ -264,7 +280,13 @@ class AirPlayProcessManager:
                 return False
             self._ensure_monitor_locked()
             self._ensure_aspect_monitor_locked()
-            self._set_status(self.RUNNING, "AirPlay receiver is running")
+            if self._startup_ready:
+                self._set_status(
+                    self.RUNNING, "AirPlay receiver is running")
+            else:
+                self._set_status(
+                    self.STARTING,
+                    "Waiting for AirPlay discovery to become ready")
             return True
 
     def restart(self):
@@ -416,6 +438,11 @@ class AirPlayProcessManager:
         return True
 
     def _start_process_locked(self):
+        self._startup_ready = not self.require_macast_window
+        self._mdns_registered.clear()
+        self._startup_deadline = (
+            None if self._startup_ready
+            else time.monotonic() + self.startup_timeout)
         command = [self.executable] + self.arguments
         env = self._env if self._env is not None else dict(os.environ)
         if self.working_dir:
@@ -509,7 +536,6 @@ class AirPlayProcessManager:
         if sys.platform != "win32" or not self.hide_until_mirror:
             return
 
-        self._read_mirror_events_locked()
         if self._window_hide_at is not None and \
                 time.monotonic() >= self._window_hide_at:
             self._hide_windows_windows(process.pid)
@@ -518,7 +544,7 @@ class AirPlayProcessManager:
                 not self._window_user_visible:
             self._hide_windows_windows(process.pid)
 
-    def _read_mirror_events_locked(self):
+    def _read_mirror_events_locked(self, process=None):
         if not self.log_path or not os.path.isfile(self.log_path):
             return
         try:
@@ -533,6 +559,24 @@ class AirPlayProcessManager:
 
         text = data.decode("utf-8", errors="replace")
         for line in text.splitlines():
+            if process is not None and \
+                    "mDNS register:" in line and "status=0" in line:
+                if "._raop._tcp.local" in line:
+                    self._mdns_registered.add("raop")
+                if "._airplay._tcp.local" in line:
+                    self._mdns_registered.add("airplay")
+                if {"raop", "airplay"}.issubset(
+                        self._mdns_registered) and not self._startup_ready:
+                    self._startup_ready = True
+                    self._startup_deadline = None
+                    if self._desired_running:
+                        self._set_status(
+                            self.RUNNING,
+                            "AirPlay receiver is running")
+            if process is not None and \
+                    "AudioReceiver: SDL audio output unavailable" in line:
+                logger.warning(
+                    "AirPlay receiver started without an audio output")
             if "mirror: iOS connected from" in line:
                 self._window_shown_for_session = True
                 self._window_user_visible = False
@@ -610,8 +654,15 @@ class AirPlayProcessManager:
             if return_code is None:
                 media_changed = False
                 with self._lock:
+                    self._read_mirror_events_locked(process)
                     self._update_receiver_window_locked(process)
                     media_changed = self._read_media_state_locked()
+                    startup_timed_out = (
+                        not self._startup_ready and
+                        self._startup_deadline is not None and
+                        time.monotonic() >= self._startup_deadline)
+                    if startup_timed_out:
+                        self._startup_deadline = None
                 if media_changed:
                     callback = self.media_callback
                     if callback is not None:
@@ -619,6 +670,29 @@ class AirPlayProcessManager:
                             callback(self.media_state)
                         except Exception:
                             logger.exception("AirPlay media callback failed")
+                if startup_timed_out:
+                    logger.error(
+                        "AirPlay receiver did not publish mDNS services "
+                        "before the startup timeout")
+                    if self.auto_restart and \
+                            self._restart_attempts < \
+                            self.max_restart_attempts:
+                        with self._lock:
+                            self._restart_attempts += 1
+                            self._set_status(
+                                self.RESTARTING,
+                                "AirPlay discovery failed; restarting "
+                                "({}/{})".format(
+                                    self._restart_attempts,
+                                    self.max_restart_attempts))
+                        process.terminate()
+                    else:
+                        with self._lock:
+                            self._desired_running = False
+                            self._set_status(
+                                self.ERROR,
+                                "AirPlay started, but discovery did not "
+                                "become ready")
                 if self._process_started_at is not None and \
                         time.monotonic() - self._process_started_at >= 30:
                     self._restart_attempts = 0
@@ -633,7 +707,7 @@ class AirPlayProcessManager:
             logger.warning("AirPlay receiver exited with code %s", return_code)
             if not desired:
                 continue
-            if return_code == 0:
+            if return_code == 0 and self._startup_ready:
                 with self._lock:
                     self._desired_running = False
                     self._set_status(
@@ -669,8 +743,13 @@ class AirPlayProcessManager:
                     self._desired_running = False
                     self._set_status(self.ERROR, str(error))
                     return
-                self._set_status(
-                    self.RUNNING, "AirPlay receiver is running")
+                if self._startup_ready:
+                    self._set_status(
+                        self.RUNNING, "AirPlay receiver is running")
+                else:
+                    self._set_status(
+                        self.STARTING,
+                        "Waiting for AirPlay discovery to become ready")
 
     def _read_media_state_locked(self):
         path = self.state_path

@@ -99,6 +99,9 @@ This fork extends Macast with an independent
   minimize, maximize, and close controls.
 - The video window follows the current portrait or landscape aspect ratio.
   Edge dragging is ratio-constrained and remains usable for resizing.
+- Closing the mirror window disconnects the active sender and hides the window;
+  the AirPlay receiver, RTSP server and mDNS advertisement stay running for the
+  next connection.
 - The AirPlay receiver uses Macast's normal friendly-name setting as its base
   name. A six-character stable identity suffix is appended in discovery so
   same-named receivers on one LAN remain distinguishable.

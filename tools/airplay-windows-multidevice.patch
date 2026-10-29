@@ -99,6 +99,14 @@ diff --git a/src/main.cpp b/src/main.cpp
  
      // Start the SDL2 renderer window upfront. Streams will push decoded
      // frames once an iPhone connects.
+@@ -448,7 +448,7 @@ int main(int argc, char** argv) {
+         }
+         if (disconnect_requested.exchange(false)) {
+-            LOG_INFO << "Disconnect requested by toolbar";
++            LOG_INFO << "Disconnect requested";
+             server.disconnect_clients();
+             LOG_INFO << "Disconnect completed: all client handlers drained";
+         }
 diff --git a/src/mdns/mdns_service.h b/src/mdns/mdns_service.h
 --- a/src/mdns/mdns_service.h
 +++ b/src/mdns/mdns_service.h
@@ -221,6 +229,49 @@ diff --git a/src/mdns/mdns_service.cpp b/src/mdns/mdns_service.cpp
                   << "._airplay._tcp.local and _raop._tcp.local on port " << port;
          return true;
      }
+diff --git a/src/video/video_renderer.cpp b/src/video/video_renderer.cpp
+--- a/src/video/video_renderer.cpp
++++ b/src/video/video_renderer.cpp
+@@ -1212,6 +1212,20 @@ void VideoRenderer::run(const std::string& title) {
+     };
+ 
+     ap::platform::FirewallMonitor firewall_monitor;
++    auto close_or_hide_window = [&]() {
++        if (!start_hidden_) {
++            closed_  = true;
++            running_ = false;
++            return;
++        }
++        // Macast owns this receiver process. Closing the mirror window stops
++        // the active sender, not AirPlay discovery and future connections.
++        LOG_INFO << "Mirror window closed; disconnecting session and hiding";
++        if (disconnect_handler_) disconnect_handler_();
++        if (fullscreen) toggle_fullscreen();
++        show_requested_.store(false);
++        SDL_HideWindow(window);
++    };
+     while (running_.load()) {
+         if (show_requested_.exchange(false)) {
+             SDL_ShowWindow(window);
+@@ -1284,8 +1298,7 @@ void VideoRenderer::run(const std::string& title) {
+             ImGui_ImplSDL2_ProcessEvent(&e);
+             if (e.type == SDL_QUIT) {
+                 LOG_INFO << "VideoRenderer received SDL_QUIT";
+-                closed_  = true;
+-                running_ = false;
++                close_or_hide_window();
+                 break;
+             }
+             const ImGuiIO& io_poll = ImGui::GetIO();
+@@ -1307,7 +1320,7 @@ void VideoRenderer::run(const std::string& title) {
+                         if (fullscreen)         toggle_fullscreen();
+                         else if (ui.chromeless) ui.chromeless = false;
+                         else if (ui.settings_open) ui.settings_open = false;
+-                        else { closed_ = true; running_ = false; }
++                        else close_or_hide_window();
+                         break;
+                     case SDLK_f:
+                     case SDLK_F11:
 diff --git a/tools/test_mdns_lan.cpp b/tools/test_mdns_lan.cpp
 --- a/tools/test_mdns_lan.cpp
 +++ b/tools/test_mdns_lan.cpp

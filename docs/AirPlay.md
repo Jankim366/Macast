@@ -68,6 +68,9 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
 - The visible window is fitted to the decoded video resolution, so portrait
   and landscape mirrors keep their native aspect ratio without side or top
   black bars.
+- Closing the video window in Macast-managed mode disconnects the current
+  sender and hides the window. It does not stop the receiver process, RTSP
+  listener, DACP controls, or mDNS advertisement.
 - While the window is visible, Macast checks the client-area ratio every 30 ms.
   Manual resizing is constrained to the current video ratio; maximizing fits
   the largest aspect-correct window on the active monitor.

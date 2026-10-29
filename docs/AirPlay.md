@@ -26,10 +26,15 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
   Ed25519 key rather than process-wide constants or a fallback `02:00:...`
   MAC. The same identity is reused on every launch, while separate Macast
   installations receive distinct receiver IDs.
-- The `_airplay` instance label and mDNS host include a short identity suffix;
-  the `_raop` instance name uses the full derived device ID. Same-named Macast
+- The `_airplay` instance label includes a short identity suffix and the
+  `_raop` instance name uses the full derived device ID. Same-named Macast
   receivers on one LAN therefore remain separate DNS-SD services and can all
-  appear in the iOS AirPlay picker.
+  appear in the iOS AirPlay picker. The SRV target deliberately remains the
+  real Windows host name, because inventing a host label can make the service
+  discoverable while resolving to a VPN/proxy address.
+- The LAN regression test resolves the registered service through Windows
+  DNS-SD and requires the returned IPv4 address to match the physical interface.
+  A browse-only test is not sufficient for AirPlay connection readiness.
 - The receiver checks the selected LAN interface and IPv4 once per second.
   When Windows changes networks, it stops the old mDNS registration and
   advertises the same receiver on the new physical LAN without restarting the

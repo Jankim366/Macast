@@ -180,15 +180,16 @@ diff --git a/src/mdns/mdns_service.cpp b/src/mdns/mdns_service.cpp
                   << " status=" << status;
          service->cv.notify_all();
      }
-@@ -168,7 +199,10 @@ struct MdnsService::Impl {
+@@ -168,7 +199,11 @@ struct MdnsService::Impl {
              LOG_ERROR << "GetComputerNameExW failed: " << GetLastError();
              return false;
          }
++        // Keep the machine's real mDNS host name. Windows publishes the
++        // interface addresses for this name; inventing a host label can make
++        // the service discoverable while its SRV target resolves elsewhere.
 -        std::wstring local_host = std::wstring(host) + L".local";
-+        std::wstring host_label(host);
-+        if (host_label.size() > 48) host_label.resize(48);
-+        const std::wstring local_host = host_label + L"-macast-" +
-+            widen(identity_suffix(ctx)) + L".local";
++        const std::wstring local_host = std::wstring(host) + L".local";
++        LOG_INFO << "mDNS SRV host=" << narrow(local_host.c_str());
          const ap::net::LanInterface lan =
              ap::net::primary_lan_interface();
          if (lan.index == 0) {
@@ -223,6 +224,75 @@ diff --git a/src/mdns/mdns_service.cpp b/src/mdns/mdns_service.cpp
 diff --git a/tools/test_mdns_lan.cpp b/tools/test_mdns_lan.cpp
 --- a/tools/test_mdns_lan.cpp
 +++ b/tools/test_mdns_lan.cpp
+@@ -5,12 +5,14 @@
+ 
+ #include <windows.h>
+ #include <windns.h>
++#include <ws2tcpip.h>
+ 
+ #include <chrono>
+ #include <condition_variable>
+ #include <iostream>
+ #include <mutex>
+ #include <string>
++#include <utility>
+ 
+ namespace {
+ 
+@@ -23,6 +25,20 @@ struct BrowseState {
+     DNS_SERVICE_CANCEL cancel{};
+ };
+ 
++struct ResolveState {
++    std::mutex mutex;
++    std::condition_variable cv;
++    std::wstring query;
++    std::wstring host;
++    IP4_ADDRESS ipv4{};
++    WORD port{0};
++    DWORD status{ERROR_NOT_READY};
++    bool has_ipv4{false};
++    bool completed{false};
++    DNS_SERVICE_RESOLVE_REQUEST request{};
++    DNS_SERVICE_CANCEL cancel{};
++};
++
+ void WINAPI browse_callback(
+     DWORD status, PVOID context, PDNS_RECORD records) {
+     auto* state = static_cast<BrowseState*>(context);
+@@ -47,6 +63,32 @@ void WINAPI browse_callback(
+     }
+ }
+ 
++void WINAPI resolve_callback(
++    DWORD status, PVOID context, PDNS_SERVICE_INSTANCE instance) {
++    auto* state = static_cast<ResolveState*>(context);
++    std::wstring host;
++    IP4_ADDRESS ipv4{};
++    WORD port = 0;
++    const bool has_ipv4 =
++        instance && instance->ip4Address != nullptr;
++    if (instance) {
++        if (instance->pszHostName) host = instance->pszHostName;
++        port = instance->wPort;
++        if (has_ipv4) ipv4 = *instance->ip4Address;
++        DnsServiceFreeInstance(instance);
++    }
++    {
++        std::lock_guard<std::mutex> lock(state->mutex);
++        state->status = status;
++        state->host = std::move(host);
++        state->ipv4 = ipv4;
++        state->port = port;
++        state->has_ipv4 = has_ipv4;
++        state->completed = true;
++    }
++    state->cv.notify_all();
++}
++
+ } // namespace
+ 
+ int main() {
 @@ -73,7 +73,11 @@ int main() {
      }
  
@@ -236,3 +306,70 @@ diff --git a/tools/test_mdns_lan.cpp b/tools/test_mdns_lan.cpp
      state.request.Version = DNS_QUERY_REQUEST_VERSION1;
      state.request.InterfaceIndex = lan.index;
      state.request.QueryName = L"_airplay._tcp.local";
+@@ -93,15 +139,62 @@ int main() {
+             lock, std::chrono::seconds(8),
+             [&] { return state.found; });
+     }
++    if (!found) {
++        DnsServiceBrowseCancel(&state.cancel);
++        service.stop();
++        ap::net::global_shutdown();
++        std::cerr << "FAIL: LAN mDNS browse did not return the receiver\n";
++        return 1;
++    }
++
++    ResolveState resolved;
++    resolved.query = state.expected;
++    resolved.request.Version = DNS_QUERY_REQUEST_VERSION1;
++    resolved.request.InterfaceIndex = lan.index;
++    resolved.request.QueryName = resolved.query.data();
++    resolved.request.pResolveCompletionCallback = &resolve_callback;
++    resolved.request.pQueryContext = &resolved;
++    if (DnsServiceResolve(&resolved.request, &resolved.cancel) !=
++        DNS_REQUEST_PENDING) {
++        DnsServiceBrowseCancel(&state.cancel);
++        service.stop();
++        ap::net::global_shutdown();
++        std::cerr << "FAIL: mDNS resolve could not start\n";
++        return 1;
++    }
++
++    bool resolve_completed = false;
++    {
++        std::unique_lock<std::mutex> lock(resolved.mutex);
++        resolve_completed = resolved.cv.wait_for(
++            lock, std::chrono::seconds(8),
++            [&] { return resolved.completed; });
++    }
++    DnsServiceResolveCancel(&resolved.cancel);
+     DnsServiceBrowseCancel(&state.cancel);
+     service.stop();
+     ap::net::global_shutdown();
+ 
+-    if (!found) {
+-        std::cerr << "FAIL: LAN mDNS browse did not return the receiver\n";
++    if (!resolve_completed || resolved.status != ERROR_SUCCESS) {
++        std::cerr << "FAIL: mDNS service did not resolve, status="
++                  << resolved.status << '\n';
++        return 1;
++    }
++    IP4_ADDRESS expected_ipv4{};
++    if (InetPtonA(AF_INET, lan.ipv4.c_str(), &expected_ipv4) != 1 ||
++        !resolved.has_ipv4 ||
++        resolved.ipv4 != expected_ipv4) {
++        std::cerr << "FAIL: mDNS SRV target did not resolve to LAN IPv4 "
++                  << lan.ipv4 << '\n';
+         return 1;
+     }
+-    std::cout << "PASS: LAN mDNS registration is discoverable on interface "
+-              << lan.index << '\n';
++    if (resolved.port != 65010) {
++        std::cerr << "FAIL: mDNS SRV port mismatch: "
++                  << resolved.port << '\n';
++        return 1;
++    }
++    std::cout << "PASS: LAN mDNS registration resolves to "
++              << lan.ipv4 << ':' << resolved.port
++              << " on interface " << lan.index << '\n';
+     return 0;
+ }

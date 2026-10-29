@@ -16,6 +16,7 @@ struct ReceiverIdentity {
 // avoids collisions when multiple PCs use the same network adapter, VPN or
 // receiver name.
 ReceiverIdentity derive_receiver_identity(
-    const std::vector<unsigned char>& public_key);
+    const std::vector<unsigned char>& public_key,
+    const std::string& preferred_device_id = {});
 
 } // namespace ap::airplay

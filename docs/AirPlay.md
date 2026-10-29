@@ -22,10 +22,10 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
   including its concrete IPv4 address and interface index. Proxy, VPN,
   container and other virtual adapters are skipped, so a FlClash/ZeroTier
   route cannot publish AirPlay only on `198.18.0.1` or `10.147.x.x`.
-- `deviceid` and `pi` are deterministic values derived from the persistent
-  Ed25519 key rather than process-wide constants or a fallback `02:00:...`
-  MAC. The same identity is reused on every launch, while separate Macast
-  installations receive distinct receiver IDs.
+- `deviceid` is the real selected physical adapter MAC rather than a
+  process-wide constant or fallback `02:00:...` value. `pi` is deterministically
+  salted with both the persistent Ed25519 key and that MAC, so separate Macast
+  installations remain distinct even when they share a copied identity key.
 - The `_airplay` instance label includes a short identity suffix and the
   `_raop` instance name uses the full derived device ID. Same-named Macast
   receivers on one LAN therefore remain separate DNS-SD services and can all
@@ -35,6 +35,9 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
 - The LAN regression test resolves the registered service through Windows
   DNS-SD and requires the returned IPv4 address to match the physical interface.
   A browse-only test is not sufficient for AirPlay connection readiness.
+- When testing two Windows receivers, run the same current build on both.
+  Earlier builds derived both public identifiers only from `identity.key` and
+  can still collide with an old receiver during the transition.
 - The receiver checks the selected LAN interface and IPv4 once per second.
   When Windows changes networks, it stops the old mDNS registration and
   advertises the same receiver on the new physical LAN without restarting the

@@ -84,11 +84,11 @@ This fork extends Macast with an independent
 - AirPlay publishing is pinned to the physical Wi-Fi/Ethernet interface and its
   real IPv4/MAC address. FlClash, ZeroTier and VPN adapters are not allowed to
   capture the AirPlay mDNS record; DACP browsing uses the same LAN interface.
-- Each installation derives its AirPlay `deviceid`, `pi`, and service suffix
-  from the persistent Ed25519 identity. Multiple Macast PCs with the same
-  friendly name therefore remain separate receivers instead of overwriting one
-  another in iOS discovery. The mDNS SRV host intentionally remains the real
-  Windows host name so it resolves to the selected physical LAN address.
+- Each installation uses its physical adapter MAC as AirPlay `deviceid` and
+  derives `pi` from both the persistent Ed25519 identity and that MAC. Multiple
+  Macast PCs with the same friendly name therefore remain separate receivers,
+  even if an `identity.key` was copied between them. The mDNS SRV host remains
+  the real Windows host name so it resolves to the selected physical LAN.
 - The backend watches the physical LAN address once per second and automatically
   withdraws/re-publishes mDNS after switching Wi-Fi, a phone hotspot or Ethernet.
 - The packed backend is staged in Macast's stable user-data directory so its

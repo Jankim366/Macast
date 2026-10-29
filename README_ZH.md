@@ -111,10 +111,10 @@ AirPlay 屏幕镜像与音频接收进程的部署、配置和验证方式见
   mDNS 记录；FlClash、ZeroTier、VPN 等虚拟网卡不会抢占 AirPlay 广播。
   DACP 反向控制也使用同一个物理 LAN 接口；链路本地 IPv6 地址会保留
   `%接口序号` scope。
-- 每份安装都会从持久化的 Ed25519 身份派生 `deviceid`、`pi` 和服务后缀。
-  因此同一局域网内多台名称相同的 Macast 电脑会被识别为不同接收端，不会在
-  iPhone 的设备列表里互相覆盖。mDNS SRV 主机名仍使用真实的 Windows 主机名，
-  以确保解析到所选物理 LAN 地址，而不是虚拟网卡地址。
+- 每份安装使用物理网卡的真实 MAC 作为 AirPlay `deviceid`，并用持久化
+  Ed25519 身份与 MAC 共同派生 `pi`。因此同一局域网内多台名称相同的 Macast
+  会被识别为不同接收端，即使误复制了同一个 `identity.key` 也不会重复。
+  mDNS SRV 主机名仍使用真实 Windows 主机名，确保解析到物理 LAN 地址。
 - AirPlay 后端每秒检查一次实际 LAN 接口和 IPv4。切换 Wi-Fi、手机热点或
   网线后会自动撤销旧 mDNS 记录并重新发布，不再需要手动重启 AirPlay。
 - PyInstaller 临时目录每次启动都会变化，因此 Macast 会把 AirPlay 后端复制到

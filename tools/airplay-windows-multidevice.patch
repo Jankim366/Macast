@@ -66,10 +66,12 @@ diff --git a/src/main.cpp b/src/main.cpp
      ctx.public_key = identity->public_key();
      ctx.identity   = identity.get();
  
-+    // Keep all public AirPlay identifiers stable per installation while
-+    // preventing machines with the same receiver name from sharing identity.
++    const auto lan = ap::net::primary_lan_interface();
++
++    // Use the real physical adapter MAC as AirPlay deviceid. Salt pi with the
++    // same MAC so two machines cannot collide even if identity.key was copied.
 +    const auto receiver_identity =
-+        ap::airplay::derive_receiver_identity(ctx.public_key);
++        ap::airplay::derive_receiver_identity(ctx.public_key, lan.mac);
 +    if (receiver_identity.device_id.empty() ||
 +        receiver_identity.public_id.empty()) {
 +        LOG_ERROR << "failed to derive receiver identity — aborting";
@@ -83,7 +85,7 @@ diff --git a/src/main.cpp b/src/main.cpp
      LOG_INFO << "name="     << ctx.name;
      LOG_INFO << "deviceid=" << ctx.deviceid;
 +    LOG_INFO << "pi="       << ctx.pi;
-     const auto lan = ap::net::primary_lan_interface();
+-    const auto lan = ap::net::primary_lan_interface();
      const std::string local_ip =
          lan.ipv4.empty() ? ap::net::primary_ipv4() : lan.ipv4;
 @@ -278,10 +302,11 @@ int main(int argc, char** argv) {

@@ -62,6 +62,22 @@ if (-not $preemptionApplied) {
     Write-Host "airplay-windows-preemption.patch is already applied."
 }
 
+$multidevicePatch = Join-Path $PSScriptRoot "airplay-windows-multidevice.patch"
+$previousErrorPreference = $ErrorActionPreference
+$ErrorActionPreference = "SilentlyContinue"
+git -C $SourceDirectory apply --recount --reverse --check $multidevicePatch 2>&1 |
+    Out-Null
+$multideviceApplied = $LASTEXITCODE -eq 0
+$ErrorActionPreference = $previousErrorPreference
+if (-not $multideviceApplied) {
+    git -C $SourceDirectory apply --recount $multidevicePatch
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to apply airplay-windows-multidevice.patch."
+    }
+} else {
+    Write-Host "airplay-windows-multidevice.patch is already applied."
+}
+
 if (-not (Test-Path -LiteralPath (Join-Path $VcpkgDirectory ".git"))) {
     git clone --filter=blob:none https://github.com/microsoft/vcpkg.git $VcpkgDirectory
 }

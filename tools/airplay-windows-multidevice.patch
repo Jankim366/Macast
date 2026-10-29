@@ -1,0 +1,238 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -318,6 +318,7 @@ add_executable(airplay-windows
+     src/airplay/rtsp_parser.cpp
+     src/airplay/sdp.cpp
+     src/airplay/dacp_remote.cpp
++    src/airplay/receiver_identity.cpp
+     src/airplay/server.cpp
+     src/airplay/streams.cpp
+     src/airplay/fcup.cpp
+@@ -481,6 +482,13 @@ endif()
+ # Focused regression tests for receiver disconnect and shutdown.
+ option(BUILD_NETWORK_TESTS "Build socket shutdown regression tests" OFF)
+ if(BUILD_NETWORK_TESTS)
++    add_executable(test-receiver-identity
++        tools/test_receiver_identity.cpp
++        src/airplay/receiver_identity.cpp)
++    target_include_directories(test-receiver-identity PRIVATE src)
++    target_link_libraries(test-receiver-identity PRIVATE OpenSSL::Crypto)
++    add_test(NAME receiver-identity COMMAND test-receiver-identity)
++
+     add_executable(test-firewall tools/test_firewall.cpp src/platform/firewall.cpp)
+     target_include_directories(test-firewall PRIVATE src)
+     if(WIN32)
+diff --git a/src/main.cpp b/src/main.cpp
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -9,6 +9,7 @@
+ 
+ #include "airplay/hls_local_server.h"
+ #include "airplay/live_settings.h"
++#include "airplay/receiver_identity.h"
+ #include "airplay/server.h"
+ #include "video/hls_player.h"
+ #include "crypto/identity.h"
+@@ -37,6 +38,17 @@ namespace {
+ 
+ std::atomic<bool> g_stop{false};
+ 
++std::string hex_encode(const std::vector<unsigned char>& bytes) {
++    static const char digits[] = "0123456789abcdef";
++    std::string result;
++    result.reserve(bytes.size() * 2);
++    for (unsigned char byte : bytes) {
++        result.push_back(digits[byte >> 4]);
++        result.push_back(digits[byte & 0x0f]);
++    }
++    return result;
++}
++
+ #if defined(_WIN32)
+ BOOL WINAPI console_handler(DWORD type) {
+     if (type == CTRL_C_EVENT || type == CTRL_CLOSE_EVENT) {
+@@ -62,9 +74,7 @@ void signal_handler(int) { g_stop = true; }
+ ap::airplay::DeviceContext build_device_context(bool hls_playback) {
+     ap::airplay::DeviceContext ctx;
+     ctx.name     = "AirPlay-Windows";
+-    ctx.deviceid = ap::net::primary_mac();
+     ctx.model    = "AppleTV3,2";
+-    ctx.pi       = "b08f5a79-db29-4384-b456-a4784d9e6055";
+     // Features:
+     //   0x5A7FFEE6 - UxPlay default (mirror + audio, no HLS/video push).
+     //   + bit 0    - AirPlay video supported  (enables AirPlay Streaming)
+@@ -268,9 +278,23 @@ int main(int argc, char** argv) {
+     ctx.public_key = identity->public_key();
+     ctx.identity   = identity.get();
+ 
++    // Keep all public AirPlay identifiers stable per installation while
++    // preventing machines with the same receiver name from sharing identity.
++    const auto receiver_identity =
++        ap::airplay::derive_receiver_identity(ctx.public_key);
++    if (receiver_identity.device_id.empty() ||
++        receiver_identity.public_id.empty()) {
++        LOG_ERROR << "failed to derive receiver identity — aborting";
++        ap::net::global_shutdown();
++        return 1;
++    }
++    ctx.deviceid = receiver_identity.device_id;
++    ctx.pi       = receiver_identity.public_id;
++
+     LOG_INFO << "=== AirPlay-Windows skeleton ===";
+     LOG_INFO << "name="     << ctx.name;
+     LOG_INFO << "deviceid=" << ctx.deviceid;
++    LOG_INFO << "pi="       << ctx.pi;
+     const auto lan = ap::net::primary_lan_interface();
+     const std::string local_ip =
+         lan.ipv4.empty() ? ap::net::primary_ipv4() : lan.ipv4;
+@@ -278,10 +302,11 @@ int main(int argc, char** argv) {
+         lan.ipv6.empty() ? ap::net::primary_ipv6() : lan.ipv6;
+     LOG_INFO << "ip="       << local_ip;
+     LOG_INFO << "LAN interface index=" << lan.index;
++    LOG_INFO << "LAN interface mac=" << lan.mac;
+     if (!local_ipv6.empty()) {
+         LOG_INFO << "ipv6="  << local_ipv6;
+     }
+-    LOG_INFO << "pk(Ed25519)=" << ctx.public_key.size() << " bytes";
++    LOG_INFO << "pk(Ed25519)=" << hex_encode(ctx.public_key);
+ 
+     // Start the SDL2 renderer window upfront. Streams will push decoded
+     // frames once an iPhone connects.
+diff --git a/src/mdns/mdns_service.h b/src/mdns/mdns_service.h
+--- a/src/mdns/mdns_service.h
++++ b/src/mdns/mdns_service.h
+@@ -4,9 +4,15 @@
+ 
+ #include <cstdint>
+ #include <memory>
++#include <string>
+ 
+ namespace ap::mdns {
+ 
++// Friendly receiver name plus a short identity suffix. The suffix prevents
++// DNS-SD from collapsing same-named receivers installed on different PCs.
++std::string airplay_instance_label(
++    const ap::airplay::DeviceContext& ctx);
++
+ // Advertises the AirPlay receiver on the local network via mDNS / DNS-SD.
+ //
+ // Windows 10 1809+ / Windows 11: uses the native `DnsServiceRegister` API
+diff --git a/src/mdns/mdns_service.cpp b/src/mdns/mdns_service.cpp
+--- a/src/mdns/mdns_service.cpp
++++ b/src/mdns/mdns_service.cpp
+@@ -21,6 +21,29 @@
+ 
+ namespace ap::mdns {
+ 
++namespace {
++
++std::string identity_suffix(const ap::airplay::DeviceContext& ctx) {
++    std::string hex;
++    hex.reserve(ctx.deviceid.size());
++    for (char c : ctx.deviceid) {
++        if ((c >= '0' && c <= '9') ||
++            (c >= 'a' && c <= 'f') ||
++            (c >= 'A' && c <= 'F')) {
++            hex.push_back(c);
++        }
++    }
++    if (hex.size() < 6) return "000000";
++    return hex.substr(hex.size() - 6);
++}
++
++} // namespace
++
++std::string airplay_instance_label(
++    const ap::airplay::DeviceContext& ctx) {
++    return ctx.name + " [" + identity_suffix(ctx) + "]";
++}
++
+ #if defined(_WIN32)
+ 
+ namespace {
+@@ -52,6 +75,7 @@ std::string narrow(PCWSTR ws) {
+ struct RegisteredService {
+     std::wstring              instance_name;   // "Name._type._tcp.local"
+     std::wstring              host_name;       // "pc.local"
++    std::wstring              registered_instance_name;
+     std::vector<std::wstring> keys;
+     std::vector<std::wstring> values;
+     std::vector<PWSTR>        key_ptrs;
+@@ -88,12 +112,19 @@ struct MdnsService::Impl {
+         std::unique_ptr<std::shared_ptr<RegisteredService>> owner(
+             static_cast<std::shared_ptr<RegisteredService>*>(context));
+         auto service = *owner;
+-        if (inst) DnsServiceFreeInstance(inst);
+         std::lock_guard<std::mutex> lock(service->mutex);
++        if (inst && inst->pszInstanceName) {
++            service->registered_instance_name = inst->pszInstanceName;
++        }
++        if (inst) DnsServiceFreeInstance(inst);
+         service->status = status;
+         service->pending = false;
+         LOG_INFO << "mDNS " << (service->deregistering ? "deregister" : "register")
+                  << ": " << narrow(service->instance_name.c_str())
++                 << " as "
++                 << narrow(service->registered_instance_name.empty()
++                               ? service->instance_name.c_str()
++                               : service->registered_instance_name.c_str())
+                  << " status=" << status;
+         service->cv.notify_all();
+     }
+@@ -168,7 +199,10 @@ struct MdnsService::Impl {
+             LOG_ERROR << "GetComputerNameExW failed: " << GetLastError();
+             return false;
+         }
+-        std::wstring local_host = std::wstring(host) + L".local";
++        std::wstring host_label(host);
++        if (host_label.size() > 48) host_label.resize(48);
++        const std::wstring local_host = host_label + L"-macast-" +
++            widen(identity_suffix(ctx)) + L".local";
+         const ap::net::LanInterface lan =
+             ap::net::primary_lan_interface();
+         if (lan.index == 0) {
+@@ -204,7 +238,8 @@ struct MdnsService::Impl {
+         // ---- _airplay._tcp --------------------------------------------------
+         airplay->host_name     = local_host;
+         configure_interface(airplay);
+-        airplay->instance_name = widen(ctx.name) + L"._airplay._tcp.local";
++        airplay->instance_name =
++            widen(airplay_instance_label(ctx)) + L"._airplay._tcp.local";
+         airplay->keys          = { L"deviceid", L"features", L"flags", L"model",
+                                   L"pi", L"pk", L"pw", L"srcvers", L"vv" };
+         airplay->values        = { widen(ctx.deviceid), widen(ctx.features),
+@@ -322,7 +357,7 @@ struct MdnsService::Impl {
+         int rc = avahi_entry_group_add_service_strlst(
+             group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC,
+             AvahiPublishFlags(0),
+-            ctx.name.c_str(), "_airplay._tcp",
++            airplay_instance_label(ctx).c_str(), "_airplay._tcp",
+             nullptr, nullptr, port, airplay_txt);
+         avahi_string_list_free(airplay_txt);
+         if (rc < 0) {
+@@ -372,7 +407,7 @@ struct MdnsService::Impl {
+                       << avahi_strerror(rc);
+             return false;
+         }
+-        LOG_INFO << "Avahi registered: " << ctx.name
++        LOG_INFO << "Avahi registered: " << airplay_instance_label(ctx)
+                  << "._airplay._tcp.local and _raop._tcp.local on port " << port;
+         return true;
+     }
+diff --git a/tools/test_mdns_lan.cpp b/tools/test_mdns_lan.cpp
+--- a/tools/test_mdns_lan.cpp
++++ b/tools/test_mdns_lan.cpp
+@@ -73,7 +73,11 @@ int main() {
+     }
+ 
+     BrowseState state;
+-    state.expected = L"Macast mDNS Test._airplay._tcp.local";
++    const std::string expected_label =
++        ap::mdns::airplay_instance_label(context);
++    state.expected = std::wstring(
++        expected_label.begin(), expected_label.end()) +
++        L"._airplay._tcp.local";
+     state.request.Version = DNS_QUERY_REQUEST_VERSION1;
+     state.request.InterfaceIndex = lan.index;
+     state.request.QueryName = L"_airplay._tcp.local";

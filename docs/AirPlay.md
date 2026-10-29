@@ -22,6 +22,14 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
   including its concrete IPv4 address and interface index. Proxy, VPN,
   container and other virtual adapters are skipped, so a FlClash/ZeroTier
   route cannot publish AirPlay only on `198.18.0.1` or `10.147.x.x`.
+- `deviceid` and `pi` are deterministic values derived from the persistent
+  Ed25519 key rather than process-wide constants or a fallback `02:00:...`
+  MAC. The same identity is reused on every launch, while separate Macast
+  installations receive distinct receiver IDs.
+- The `_airplay` instance label and mDNS host include a short identity suffix;
+  the `_raop` instance name uses the full derived device ID. Same-named Macast
+  receivers on one LAN therefore remain separate DNS-SD services and can all
+  appear in the iOS AirPlay picker.
 - The receiver checks the selected LAN interface and IPv4 once per second.
   When Windows changes networks, it stops the old mDNS registration and
   advertises the same receiver on the new physical LAN without restarting the
@@ -111,7 +119,8 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
   configuration directory.
 - `identity.key` is stored in `SETTING_DIR\AirPlay-Windows` so the sender can
   keep recognizing the receiver across launches, including PyInstaller
-  one-file builds.
+  one-file builds. The public AirPlay `deviceid`, `pi`, and discovery suffixes
+  are all derived from this key and update together if the identity is reset.
 
 Macast does not embed the mirrored video into its own menu or browser UI.
 AirPlay-Windows creates its own SDL window; Macast manages and reveals it.
@@ -155,7 +164,7 @@ The script downloads AirPlay-Windows v0.4.1, verifies its SHA-256, and stages th
 complete runtime under `bin\AirPlay-Windows`.
 
 Build the Macast-compatible standard-frame binary from the pinned source and
-the patch in `tools/airplay-windows-macast-complete.patch`:
+the reproducibility patches under `tools/`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/build_airplay_windows_macast.ps1

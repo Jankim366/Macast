@@ -111,6 +111,9 @@ AirPlay 屏幕镜像与音频接收进程的部署、配置和验证方式见
   mDNS 记录；FlClash、ZeroTier、VPN 等虚拟网卡不会抢占 AirPlay 广播。
   DACP 反向控制也使用同一个物理 LAN 接口；链路本地 IPv6 地址会保留
   `%接口序号` scope。
+- 每份安装都会从持久化的 Ed25519 身份派生 `deviceid`、`pi`、mDNS 主机名和
+  服务后缀。因此同一局域网内多台名称相同的 Macast 电脑会被识别为不同接收端，
+  不会在 iPhone 的设备列表里互相覆盖。
 - AirPlay 后端每秒检查一次实际 LAN 接口和 IPv4。切换 Wi-Fi、手机热点或
   网线后会自动撤销旧 mDNS 记录并重新发布，不再需要手动重启 AirPlay。
 - PyInstaller 临时目录每次启动都会变化，因此 Macast 会把 AirPlay 后端复制到
@@ -119,7 +122,8 @@ AirPlay 屏幕镜像与音频接收进程的部署、配置和验证方式见
   LocalSubnet 入站 Allow 规则。
 - 开始镜像时显示标准 Windows 视频窗口，带原生最小化、最大化和关闭按钮。
 - 镜像窗口始终匹配当前视频比例；拖动上下边和左右边时会按实际拖动方向缩放。
-- AirPlay 设备名称沿用 Macast 原版的 friendly name。
+- AirPlay 设备名称以 Macast 原版的 friendly name 为基础，并在发现阶段附加
+  6 位稳定身份后缀，用于区分同一局域网内名称相同的多台接收端。
 - Macast 原生 AirPlay 子菜单会显示歌曲名、歌手和播放时间，并提供上一首、
   播放、暂停、播放/暂停切换、下一首、音量加、音量减和静音切换。
 - Windows 系统媒体卡片会显示 `Macast AirPlay`、歌曲名、歌手，以及可用的

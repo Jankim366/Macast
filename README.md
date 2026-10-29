@@ -84,6 +84,10 @@ This fork extends Macast with an independent
 - AirPlay publishing is pinned to the physical Wi-Fi/Ethernet interface and its
   real IPv4/MAC address. FlClash, ZeroTier and VPN adapters are not allowed to
   capture the AirPlay mDNS record; DACP browsing uses the same LAN interface.
+- Each installation derives its AirPlay `deviceid`, `pi`, mDNS host, and service
+  suffix from the persistent Ed25519 identity. Multiple Macast PCs with the same
+  friendly name therefore remain separate receivers instead of overwriting one
+  another in iOS discovery.
 - The backend watches the physical LAN address once per second and automatically
   withdraws/re-publishes mDNS after switching Wi-Fi, a phone hotspot or Ethernet.
 - The packed backend is staged in Macast's stable user-data directory so its
@@ -94,7 +98,9 @@ This fork extends Macast with an independent
   minimize, maximize, and close controls.
 - The video window follows the current portrait or landscape aspect ratio.
   Edge dragging is ratio-constrained and remains usable for resizing.
-- The AirPlay receiver name follows Macast's normal friendly-name setting.
+- The AirPlay receiver uses Macast's normal friendly-name setting as its base
+  name. A six-character stable identity suffix is appended in discovery so
+  same-named receivers on one LAN remain distinguishable.
 - Macast's native AirPlay submenu shows the current title/artist/time and
   provides Previous, Play, Pause, Toggle Play/Pause, Next, Volume Up, Volume
   Down, and Toggle Mute.
@@ -124,8 +130,8 @@ for first-run setup, configuration, known limits, and packaging details.
 
 ### Build the Windows AirPlay backend
 
-The AirPlay backend is based on a pinned AirPlay-Windows source release and a
-small Macast compatibility patch:
+The AirPlay backend is based on a pinned AirPlay-Windows source release and the
+Macast compatibility/identity patches:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/prepare_airplay_windows.ps1

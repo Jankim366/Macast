@@ -122,6 +122,14 @@ int main() {
             return 1;
         }
     } catch (const winrt::hresult_error& error) {
+        if (error.code() == HRESULT_FROM_WIN32(ERROR_SERVICE_DOES_NOT_EXIST) ||
+            error.code() == HRESULT_FROM_WIN32(ERROR_SERVICE_DISABLED)) {
+            std::cout << "SKIP: Windows System Media Transport Controls "
+                         "service is not installed or is disabled\n";
+            media.clear();
+            DestroyWindow(window);
+            return 0;
+        }
         std::cerr << "FAIL: SMTC manager query: "
                   << winrt::to_string(error.message()) << '\n';
         DestroyWindow(window);

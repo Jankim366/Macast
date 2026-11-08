@@ -75,6 +75,11 @@ This fork extends Macast with an independent
 [AirPlay-Windows](https://github.com/moieric11/AirPlay-Windows) receiver:
 
 - iPhone/iPad screen mirroring with H.264 or HEVC and AirPlay audio.
+- Modern AirPlay 2 audio with HomeKit transient pairing, encrypted control
+  and event channels, Buffered Audio (type 103), AAC/ALAC decoding, and PTP
+  timing ingestion on UDP 319/320.
+- AirPlay 1, legacy AirPlay 2, and modern AirPlay 2 negotiation remain
+  available; the sender chooses the path from the advertised mDNS features.
 - DLNA and AirPlay can run at the same time.
 - The original Macast tray/menu and web settings remain the control interface.
 - AirPlay-Windows starts hidden, so it does not open a second management UI.
@@ -125,6 +130,9 @@ This fork extends Macast with an independent
   `MACAST_AIRPLAY_AUDIO_DEVICE` can select an exact output device.
 - AirPlay metadata and reverse controls use the sender's DMAP/DACP services;
   lyrics, complete playlists, and next-track previews are normally unavailable.
+- Modern AP2 is currently single-device sync. AP Sync, multi-room grouping,
+  and persistent Home App administration are not advertised. Independent
+  senders still follow the latest-sender-wins rule.
 - Macast stops the AirPlay process when it exits. Windows Job Objects are used
   to avoid orphaned receiver processes after an abnormal Macast exit.
 

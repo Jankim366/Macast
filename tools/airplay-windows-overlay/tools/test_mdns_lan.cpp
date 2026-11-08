@@ -73,7 +73,12 @@ int main() {
     }
 
     BrowseState state;
-    state.expected = L"Macast mDNS Test._airplay._tcp.local";
+    const std::string instance_label =
+        ap::mdns::airplay_instance_label(context);
+    state.expected =
+        std::wstring(
+            instance_label.begin(), instance_label.end()) +
+        L"._airplay._tcp.local";
     state.request.Version = DNS_QUERY_REQUEST_VERSION1;
     state.request.InterfaceIndex = lan.index;
     state.request.QueryName = L"_airplay._tcp.local";

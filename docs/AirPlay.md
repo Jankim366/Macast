@@ -26,6 +26,17 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
   process-wide constant or fallback `02:00:...` value. `pi` is deterministically
   salted with both the persistent Ed25519 key and that MAC, so separate Macast
   installations remain distinct even when they share a copied identity key.
+- Modern AP2 audio uses HomeKit transient pair-setup, encrypted RTSP control
+  and event channels, Buffered Audio stream type 103, and the sender's `shk`
+  key with ChaCha20-Poly1305.
+- A dedicated PTP listener binds UDP 319/320 on the physical LAN and tracks
+  master Sync/Follow_Up timing per clock identity. `SETRATEANCHORI` maps the
+  sender's RTP timeline onto that PTP clock, so buffered packets are released
+  at their scheduled local time. The listener is recreated when the physical
+  LAN changes.
+- `/info` advertises `supportedFormats.bufferStream` for stereo AAC-LC and
+  ALAC at 44.1/48 kHz. The advertised feature word keeps legacy pairing
+  available so AP1 and AP2 senders select their supported path.
 - The `_airplay` instance label includes a short identity suffix and the
   `_raop` instance name uses the full derived device ID. Same-named Macast
   receivers on one LAN therefore remain separate DNS-SD services and can all
@@ -38,6 +49,9 @@ reference, but Macast does not launch or package its MSYS2/GStreamer build.
 - When testing two Windows receivers, run the same current build on both.
   Earlier builds derived both public identifiers only from `identity.key` and
   can still collide with an old receiver during the transition.
+- AP Sync, multi-room grouping, and persistent Home App authority are not
+  implemented yet. Modern AP2 is currently scoped to single-device playback;
+  independent AirPlay and DLNA senders remain preemptive rather than mixed.
 - The receiver checks the selected LAN interface and IPv4 once per second.
   When Windows changes networks, it stops the old mDNS registration and
   advertises the same receiver on the new physical LAN without restarting the
@@ -174,8 +188,8 @@ powershell -ExecutionPolicy Bypass -File tools/prepare_airplay_windows.ps1
 The script downloads AirPlay-Windows v0.4.1, verifies its SHA-256, and stages the
 complete runtime under `bin\AirPlay-Windows`.
 
-Build the Macast-compatible standard-frame binary from the pinned source and
-the reproducibility patches under `tools/`:
+Build the Macast-compatible standard-frame binary from the pinned upstream
+source and the deterministic overlay under `tools/airplay-windows-overlay`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/build_airplay_windows_macast.ps1
@@ -184,7 +198,9 @@ powershell -ExecutionPolicy Bypass -File tools/build_airplay_windows_macast.ps1
 The first build installs FFmpeg/OpenSSL/SDL2 through the pinned vcpkg baseline
 and can take several minutes. The result is a self-contained 64-bit
 `airplay-windows-macast.exe`; the official multi-file release remains available
-as a fallback only.
+as a fallback only. The script always restores the pinned upstream tag before
+copying the overlay, so repeated builds do not depend on patch application
+order or stale local edits.
 
 For an installation elsewhere:
 
@@ -267,8 +283,9 @@ sufficient because AirPlay-Windows also loads SDL2 and FFmpeg DLLs.
 2. Build the clean AirPlay backend with
    `tools/build_airplay_windows_macast.ps1`.
 3. In that build tree, configure `-DBUILD_NETWORK_TESTS=ON` and run
-   `test-shutdown --dacp`, `test-audio-timing`, `test-audio-output` and
-   `test-media-session`.
+   `test-airplay2-pairing`, `test-airplay2-setup`, `test-ptp-listener`,
+   `test-buffered-audio`, `test-shutdown --dacp`, `test-audio-timing`,
+   `test-audio-output` and `test-media-session`.
 4. Start Macast and open `Setting -> AirPlay Screen Mirroring`.
 5. Confirm the menu changes from `Starting` to `Running`.
 6. On an iPhone or iPad, open Screen Mirroring and select the configured
@@ -286,6 +303,9 @@ sufficient because AirPlay-Windows also loads SDL2 and FFmpeg DLLs.
 ## Known limits and distribution risk
 
 - AirPlay-Windows supports one active sender session at a time.
+- AirPlay 2 is limited to one receiver and no AP Sync/multi-room group. The
+  lightweight PTP implementation does not perform BMCA or Delay_Req exchanges;
+  LAN one-way propagation remains as a small timing error.
 - DRM-protected video is not supported.
 - Experimental HLS direct playback is not enabled by Macast by default.
 - DACP metadata/control support depends on the sender app. Lyrics, the complete

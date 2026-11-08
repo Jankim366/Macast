@@ -19,64 +19,35 @@ New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 if (-not (Test-Path -LiteralPath (Join-Path $SourceDirectory ".git"))) {
     git clone https://github.com/moieric11/AirPlay-Windows.git $SourceDirectory
 }
-git -C $SourceDirectory checkout $Version
-
-Copy-Item -LiteralPath (Join-Path $repoRoot "macast\assets\icon.ico") `
-    -Destination (Join-Path $SourceDirectory "src\macast.ico") -Force
-
-$patchPath = Join-Path $PSScriptRoot "airplay-windows-macast-complete.patch"
-$previousErrorPreference = $ErrorActionPreference
-$ErrorActionPreference = "SilentlyContinue"
-git -C $SourceDirectory apply --recount --reverse --check $patchPath 2>&1 |
-    Out-Null
-$alreadyApplied = $LASTEXITCODE -eq 0
-$ErrorActionPreference = $previousErrorPreference
-if (-not $alreadyApplied) {
-    git -C $SourceDirectory apply --recount $patchPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to apply airplay-windows-macast-complete.patch. Use a clean AirPlay-Windows checkout."
-    }
+$managedBuildDirectory = $SourceDirectory.StartsWith(
+    $buildRoot, [StringComparison]::OrdinalIgnoreCase)
+if ($managedBuildDirectory) {
+    # build\AirPlay-Windows is a generated checkout. Resetting the exact
+    # upstream revision removes files copied by a previous Macast build.
+    git -C $SourceDirectory checkout -f $Version
 } else {
-    Write-Host "airplay-windows-macast-complete.patch is already applied."
+    $dirty = git -C $SourceDirectory status --porcelain
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not inspect AirPlay-Windows checkout."
+    }
+    if ($dirty) {
+        throw "A custom SourceDirectory must be clean before it is built."
+    }
+    git -C $SourceDirectory checkout $Version
+}
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not check out AirPlay-Windows $Version."
 }
 
-# The overlay carries the final Macast integration files. Apply it after the
-# upstream patches so repeated builds are deterministic even when the
-# AirPlay-Windows checkout already contains an older integration revision.
+# The overlay is the source of truth for every Macast-modified tracked file
+# and all added files. Copying it over a pristine upstream revision avoids
+# ordering-dependent patch application and makes repeated builds identical.
 Copy-Item -Path (Join-Path $PSScriptRoot "airplay-windows-overlay\*") `
     -Destination $SourceDirectory -Recurse -Force
-
-$preemptionPatch = Join-Path $PSScriptRoot "airplay-windows-preemption.patch"
-$previousErrorPreference = $ErrorActionPreference
-$ErrorActionPreference = "SilentlyContinue"
-git -C $SourceDirectory apply --recount --reverse --check $preemptionPatch 2>&1 |
-    Out-Null
-$preemptionApplied = $LASTEXITCODE -eq 0
-$ErrorActionPreference = $previousErrorPreference
-if (-not $preemptionApplied) {
-    git -C $SourceDirectory apply --recount $preemptionPatch
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to apply airplay-windows-preemption.patch."
-    }
-} else {
-    Write-Host "airplay-windows-preemption.patch is already applied."
-}
-
-$multidevicePatch = Join-Path $PSScriptRoot "airplay-windows-multidevice.patch"
-$previousErrorPreference = $ErrorActionPreference
-$ErrorActionPreference = "SilentlyContinue"
-git -C $SourceDirectory apply --recount --reverse --check $multidevicePatch 2>&1 |
-    Out-Null
-$multideviceApplied = $LASTEXITCODE -eq 0
-$ErrorActionPreference = $previousErrorPreference
-if (-not $multideviceApplied) {
-    git -C $SourceDirectory apply --recount $multidevicePatch
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to apply airplay-windows-multidevice.patch."
-    }
-} else {
-    Write-Host "airplay-windows-multidevice.patch is already applied."
-}
+Copy-Item -LiteralPath (Join-Path $repoRoot "macast\assets\icon.ico") `
+    -Destination (Join-Path $SourceDirectory "src\macast.ico") -Force
+Set-Content -LiteralPath (Join-Path $SourceDirectory ".macast-airplay2-integration-v2") `
+    -Value "Macast AirPlay 2 integration v2 (full overlay)" -Encoding Ascii
 
 if (-not (Test-Path -LiteralPath (Join-Path $VcpkgDirectory ".git"))) {
     git clone --filter=blob:none https://github.com/microsoft/vcpkg.git $VcpkgDirectory

@@ -101,6 +101,11 @@ AirPlay 屏幕镜像与音频接收进程的部署、配置和验证方式见
 增加独立 AirPlay 接收进程管理：
 
 - 支持 iPhone/iPad H.264、HEVC 屏幕镜像和 AirPlay 音频。
+- 支持现代 AirPlay 2 音频链路：HomeKit 临时配对、加密 control/event
+  通道、Buffered Audio(type 103)、AAC/ALAC 解码，以及 UDP 319/320 PTP
+  timing 监听。
+- 保留 AirPlay 1/legacy 配对和 realtime RAOP(type 96)路径；发送端会根据
+  mDNS features 自动选择 AP1、legacy AP2 或现代 AP2。
 - DLNA 与 AirPlay 可以同时运行。
 - 控制界面仍然是原版 Macast，不使用 AirPlay-Windows 的首页和导航。
 - AirPlay-Windows 在后台隐藏启动，不再弹出自己的管理窗口。
@@ -146,6 +151,8 @@ AirPlay 屏幕镜像与音频接收进程的部署、配置和验证方式见
   `MACAST_AIRPLAY_AUDIO_DEVICE` 指定设备名称。
 - 元数据与反向控制使用发送端的 DMAP/DACP 服务；歌词、完整播放列表和下一首
   预览通常无法获取。
+- 现代 AP2 当前按单设备同步实现，不声明 AP Sync、多房间分组或 Home App
+  的持久管理能力；多发送端仍遵守“最后投放者优先”。
 - Macast 退出时自动停止 AirPlay 接收进程，异常退出时由 Job Object 清理。
 
 首次使用时，可能需要允许 `airplay-windows-macast.exe` 通过 Windows

@@ -11,6 +11,7 @@
 
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Media.h>
+#include <winrt/Windows.Media.Playback.h>
 #include <winrt/base.h>
 
 #include <chrono>
@@ -155,9 +156,11 @@ bool WindowsMediaSession::initialize(void* hwnd, CommandHandler handler) {
     }
     impl_->worker = std::thread([this] {
         Impl& state = *impl_;
+        winrt::Windows::Media::Playback::MediaPlayer media_player{nullptr};
         SystemMediaTransportControls smtc{nullptr};
         winrt::event_token button_token{};
         bool apartment_initialized = false;
+        const char* smtc_backend = "MediaPlayer";
 
         try {
             winrt::init_apartment(winrt::apartment_type::single_threaded);
@@ -166,16 +169,35 @@ bool WindowsMediaSession::initialize(void* hwnd, CommandHandler handler) {
                 LOG_WARN << "Windows SMTC could not create the Start menu shortcut";
             }
 
-            auto interop = winrt::get_activation_factory<
-                SystemMediaTransportControls,
-                ISystemMediaTransportControlsInterop>();
-            winrt::check_hresult(interop->GetForWindow(
-                state.hwnd,
-                winrt::guid_of<SystemMediaTransportControls>(),
-                winrt::put_abi(smtc)));
+            // 优先使用 MediaPlayer 的独立媒体会话。AirPlay 后端在只投音频时
+            // 会隐藏 SDL 窗口，纯 GetForWindow 会话在部分 Windows 版本不会
+            // 出现在任务栏媒体卡中；窗口路径仅作为 MediaPlayer 失败时的回退。
+            try {
+                media_player =
+                    winrt::Windows::Media::Playback::MediaPlayer();
+                smtc = media_player.SystemMediaTransportControls();
+            } catch (const winrt::hresult_error& error) {
+                LOG_WARN << "Windows MediaPlayer SMTC unavailable: "
+                         << winrt::to_string(error.message());
+                media_player = nullptr;
+                smtc = nullptr;
+            }
+            if (!smtc) {
+                smtc_backend = "window";
+                auto interop = winrt::get_activation_factory<
+                    SystemMediaTransportControls,
+                    ISystemMediaTransportControlsInterop>();
+                winrt::check_hresult(interop->GetForWindow(
+                    state.hwnd,
+                    winrt::guid_of<SystemMediaTransportControls>(),
+                    winrt::put_abi(smtc)));
+            }
 
             smtc.IsEnabled(false);
             smtc.IsStopEnabled(false);
+            if (media_player) {
+                media_player.CommandManager().IsEnabled(false);
+            }
             button_token = smtc.ButtonPressed(
                 [this](const SystemMediaTransportControls&,
                        const SystemMediaTransportControlsButtonPressedEventArgs& args) {
@@ -212,7 +234,8 @@ bool WindowsMediaSession::initialize(void* hwnd, CommandHandler handler) {
                 state.initialize_finished = true;
             }
             state.cv.notify_all();
-            LOG_INFO << "Windows SMTC initialized with AppUserModelID "
+            LOG_INFO << "Windows SMTC initialized via " << smtc_backend
+                     << " with AppUserModelID "
                      << winrt::to_string(kAppUserModelId);
         } catch (const winrt::hresult_error& error) {
             std::lock_guard<std::mutex> lock(state.mutex);
@@ -318,6 +341,10 @@ bool WindowsMediaSession::initialize(void* hwnd, CommandHandler handler) {
             updater.Update();
             smtc.IsEnabled(false);
             smtc = nullptr;
+            if (media_player) {
+                media_player.Close();
+                media_player = nullptr;
+            }
         } catch (const winrt::hresult_error&) {
         }
         if (apartment_initialized) winrt::uninit_apartment();

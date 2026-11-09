@@ -86,6 +86,22 @@ bool create_start_menu_shortcut() {
 
 } // namespace
 
+void configure_process_app_user_model_id() {
+    // AppUserModelID 必须在首个窗口出现前确定；这里用 once_flag 防止窗口线程
+    // 和 SMTC 工作线程重复设置或重复记录日志。
+    static std::once_flag configured;
+    std::call_once(configured, [] {
+        const HRESULT result =
+            SetCurrentProcessExplicitAppUserModelID(kAppUserModelId);
+        if (SUCCEEDED(result)) {
+            LOG_INFO << "Process AppUserModelID configured before window creation";
+        } else {
+            LOG_WARN << "Could not set process AppUserModelID: 0x"
+                     << std::hex << static_cast<unsigned long>(result);
+        }
+    });
+}
+
 struct WindowsMediaSession::Impl {
     mutable std::mutex mutex;
     std::condition_variable cv;
@@ -130,7 +146,7 @@ WindowsMediaSession::~WindowsMediaSession() {
 bool WindowsMediaSession::initialize(void* hwnd, CommandHandler handler) {
     if (!impl_ || !hwnd || impl_->worker.joinable()) return false;
 
-    SetCurrentProcessExplicitAppUserModelID(kAppUserModelId);
+    configure_process_app_user_model_id();
 
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -218,6 +234,8 @@ bool WindowsMediaSession::initialize(void* hwnd, CommandHandler handler) {
         }
 
         std::unique_lock<std::mutex> lock(state.mutex);
+        bool published_enabled = false;
+        std::string published_title;
         while (!state.stop) {
             state.cv.wait(lock, [&] {
                 return state.stop || state.revision != state.applied_revision;
@@ -237,10 +255,13 @@ bool WindowsMediaSession::initialize(void* hwnd, CommandHandler handler) {
             try {
                 const bool enabled = !title.empty() || !artist.empty();
                 smtc.IsEnabled(enabled);
-                smtc.IsPlayEnabled(available && !playing);
-                smtc.IsPauseEnabled(available && playing);
-                smtc.IsPreviousEnabled(available);
-                smtc.IsNextEnabled(available);
+                // 部分 Windows 版本会隐藏没有传输控件的纯元数据会话，因此只要
+                // 媒体卡有内容就启用控件；发送端不支持的命令仍由后端拒绝。
+                const bool transport = available || enabled;
+                smtc.IsPlayEnabled(transport && !playing);
+                smtc.IsPauseEnabled(transport && playing);
+                smtc.IsPreviousEnabled(transport);
+                smtc.IsNextEnabled(transport);
                 smtc.PlaybackStatus(
                     !enabled ? MediaPlaybackStatus::Closed
                     : playing ? MediaPlaybackStatus::Playing
@@ -257,6 +278,9 @@ bool WindowsMediaSession::initialize(void* hwnd, CommandHandler handler) {
                     properties.AlbumTitle(winrt::to_hstring(album));
                 }
                 updater.Update();
+                // 某些 Windows 版本只有在 DisplayUpdater 收到首个标题后才会
+                // 创建任务栏媒体卡，因此发布元数据后再次确认会话启用状态。
+                smtc.IsEnabled(enabled);
 
                 if (enabled) {
                     SystemMediaTransportControlsTimelineProperties timeline;
@@ -266,6 +290,16 @@ bool WindowsMediaSession::initialize(void* hwnd, CommandHandler handler) {
                     timeline.EndTime(to_time_span(duration_ms));
                     timeline.MaxSeekTime(to_time_span(duration_ms));
                     smtc.UpdateTimelineProperties(timeline);
+                }
+                if (enabled != published_enabled ||
+                    title != published_title) {
+                    LOG_INFO << "Windows SMTC card "
+                             << (enabled ? "visible" : "hidden")
+                             << " title=\"" << title << "\""
+                             << " playback=" << (playing ? "playing" : "paused")
+                             << " controls=" << (transport ? "enabled" : "disabled");
+                    published_enabled = enabled;
+                    published_title = title;
                 }
             } catch (const winrt::hresult_error& error) {
                 LOG_WARN << "Windows SMTC update failed: "
@@ -356,6 +390,8 @@ void WindowsMediaSession::clear() {
     impl_->wake();
 }
 #else
+void configure_process_app_user_model_id() {}
+
 struct WindowsMediaSession::Impl {};
 WindowsMediaSession::WindowsMediaSession() = default;
 WindowsMediaSession::~WindowsMediaSession() = default;

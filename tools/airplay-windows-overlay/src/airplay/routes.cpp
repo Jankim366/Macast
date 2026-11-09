@@ -464,6 +464,11 @@ Response setup_airplay2_path(
             opts.stream_id            = parsed.streams[i].stream_id;
             opts.audio_buffer_size    = parsed.streams[i].audio_buffer_size;
             opts.stream_key           = parsed.streams[i].stream_key;
+            opts.stream_iv            = parsed.streams[i].stream_iv;
+            if (session.ap2_session) {
+                opts.homekit_session_key =
+                    session.ap2_session->shared_secret();
+            }
             const uint64_t audio_format = parsed.streams[i].audio_format;
             const bool is_48k =
                 (audio_format & ((UINT64_C(1) << 14) |
@@ -474,7 +479,9 @@ Response setup_airplay2_path(
                                  (UINT64_C(1) << 21) |
                                  (UINT64_C(1) << 23) |
                                  (UINT64_C(1) << 25))) != 0;
-            opts.sample_rate = is_48k ? 48000 : 44100;
+            opts.sample_rate = parsed.streams[i].sample_rate > 0
+                ? parsed.streams[i].sample_rate
+                : (is_48k ? 48000 : 44100);
             // Prefer the live UI toggle when available; the static
             // session.mirror_hwaccel (seeded from the CLI flag) is
             // the headless fallback.
@@ -1551,11 +1558,13 @@ Response dispatch(const DeviceContext& ctx, ClientSession& session,
         r.set_header("Public",
             "ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, "
             "GET_PARAMETER, SET_PARAMETER, FLUSHBUFFERED, SETPEERS, "
-            "SETMAGICCOOKIE, SETRATEANCHORI, SETRATEANCHORTI, POST, GET");
+            "SETMAGICCOOKIE, SETRATEANCHORI, SETRATEANCHORTI, "
+            "SETRATEANCHORTIME, POST, GET");
         return r;
     }
     if (req.method == "SETRATEANCHORI" ||
-        req.method == "SETRATEANCHORTI") {
+        req.method == "SETRATEANCHORTI" ||
+        req.method == "SETRATEANCHORTIME") {
         Airplay2RateAnchor anchor;
         if (!parse_airplay2_rate_anchor(
                 reinterpret_cast<const unsigned char*>(req.body.data()),

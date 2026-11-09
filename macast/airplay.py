@@ -691,9 +691,10 @@ class AirPlayProcessManager:
                 time.monotonic() >= self._window_hide_at:
             self._hide_windows_windows(process.pid)
             self._window_hide_at = None
-        elif not self._window_shown_for_session and \
-                not self._window_user_visible:
-            self._hide_windows_windows(process.pid)
+        # Startup hiding is handled by the dedicated hide thread, and the
+        # backend shows the window itself immediately after decoding its first
+        # mirror frame. Do not continuously force it hidden here: this polling
+        # loop can otherwise win the race against the first-frame show request.
 
     def _read_mirror_events_locked(self, process=None):
         if not self.log_path or not os.path.isfile(self.log_path):

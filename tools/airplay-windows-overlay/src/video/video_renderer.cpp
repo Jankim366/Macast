@@ -780,6 +780,11 @@ void VideoRenderer::push_frame_nv12(const uint8_t* y,  int y_stride,
 }
 
 void VideoRenderer::run(const std::string& title) {
+#if defined(_WIN32)
+    // 必须在 SDL 创建首个顶层窗口前绑定应用身份，保证任务栏媒体卡能正确
+    // 关联到 Macast，而不是落到无身份的临时窗口会话。
+    ap::platform::configure_process_app_user_model_id();
+#endif
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         LOG_ERROR << "SDL_Init failed: " << SDL_GetError();
         running_ = false;

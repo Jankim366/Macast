@@ -36,7 +36,9 @@ struct StreamRequest {
     uint64_t audio_format     = 0;
     uint32_t stream_id         = 0;
     uint32_t audio_buffer_size = 0;
+    int      sample_rate       = 0; // type 96: explicit `sr`
     std::vector<unsigned char> stream_key; // type 103: shk
+    std::vector<unsigned char> stream_iv;  // type 96: shiv
 };
 
 struct Airplay2SetupRequest {

@@ -542,6 +542,14 @@ if(BUILD_NETWORK_TESTS)
     target_link_libraries(test-buffered-audio PRIVATE OpenSSL::Crypto)
     add_test(NAME buffered-audio COMMAND test-buffered-audio)
 
+    add_executable(test-mirror-decrypt
+        tools/test_mirror_decrypt.cpp
+        src/crypto/mirror_decrypt.cpp
+        src/log.cpp)
+    target_include_directories(test-mirror-decrypt PRIVATE src)
+    target_link_libraries(test-mirror-decrypt PRIVATE OpenSSL::Crypto)
+    add_test(NAME mirror-decrypt COMMAND test-mirror-decrypt)
+
     add_executable(test-firewall tools/test_firewall.cpp src/platform/firewall.cpp)
     target_include_directories(test-firewall PRIVATE src)
     if(WIN32)
@@ -556,7 +564,8 @@ if(BUILD_NETWORK_TESTS)
     target_include_directories(test-cover-art PRIVATE src ${FFMPEG_INCLUDE_DIRS_OK})
     target_link_libraries(test-cover-art PRIVATE ${FFMPEG_TARGETS})
     add_executable(test-audio-timing tools/test_audio_timing.cpp src/airplay/ntp_client.cpp
-        src/audio/audio_receiver.cpp src/audio/aac_decoder.cpp src/audio/audio_output.cpp src/net/socket.cpp)
+        src/audio/audio_receiver.cpp src/audio/ap2_packet_crypto.cpp
+        src/audio/aac_decoder.cpp src/audio/audio_output.cpp src/net/socket.cpp)
     target_include_directories(test-audio-timing PRIVATE src ${FFMPEG_INCLUDE_DIRS_OK})
     target_link_libraries(test-audio-timing PRIVATE ${FFMPEG_TARGETS} ${SDL2_TARGET} OpenSSL::Crypto)
     if(WIN32)
@@ -620,6 +629,15 @@ if(BUILD_NETWORK_TESTS)
         target_link_libraries(test-media-session PRIVATE
             shell32 shlwapi ole32 oleaut32 propsys windowsapp)
         add_test(NAME media-session COMMAND test-media-session)
+
+    add_executable(test-process-aumid
+        tools/test_process_aumid.cpp
+        src/platform/windows_media_session.cpp
+        src/log.cpp)
+    target_include_directories(test-process-aumid PRIVATE src)
+    target_link_libraries(test-process-aumid PRIVATE
+        shell32 shlwapi ole32 oleaut32 propsys windowsapp)
+    add_test(NAME process-aumid COMMAND test-process-aumid)
     endif()
     enable_testing()
     add_test(NAME firewall COMMAND test-firewall)

@@ -277,13 +277,27 @@ bool StreamSession::setup_stream(int type,
         // Decoder initialization needs the renderer's D3D11 device.
         if (renderer_) mirror_->attach_renderer(renderer_);
 
-        // Wire AES-CTR decryption before starting the accept loop.
-        if (!opts.aes_key.empty() && opts.stream_connection_id != 0) {
+        // HomeKit transient sessions encrypt video with a per-stream
+        // ChaCha20-Poly1305 key. Legacy sessions keep the FairPlay AES path.
+        if (!opts.homekit_session_key.empty() &&
+            opts.stream_connection_id != 0) {
+            if (!mirror_->enable_hap_decrypt(
+                    opts.homekit_session_key, opts.stream_connection_id,
+                    opts.mirror_hwaccel)) {
+                LOG_WARN << "SETUP stream 110: could not init HAP-ChaCha20 "
+                            "video decrypt";
+            }
+        } else if (!opts.aes_key.empty() &&
+                   opts.stream_connection_id != 0) {
             if (!mirror_->enable_decrypt(opts.aes_key, opts.stream_connection_id,
                                          opts.mirror_hwaccel)) {
                 LOG_WARN << "SETUP stream 110: could not init AES-CTR decrypt "
                             "(stream will be logged encrypted)";
             }
+        } else {
+            LOG_INFO << "SETUP stream 110: no legacy AES key; initializing "
+                        "modern/clear mirror decode path";
+            mirror_->enable_clear(opts.mirror_hwaccel);
         }
 
         uint16_t p = 0;
@@ -368,8 +382,12 @@ bool StreamSession::setup_stream(int type,
         ac.synchronize = mirror_ == nullptr;
         ac.aes_key     = opts.aes_key;
         ac.aes_iv      = opts.aes_iv;
+        ac.stream_key  = opts.stream_key;
+        ac.homekit_session_key = opts.homekit_session_key;
+        ac.stream_connection_id = opts.stream_connection_id;
         ac.ct          = opts.ct;
         ac.sample_rate = opts.sample_rate;
+        ac.spf         = opts.spf;
         ac.renderer    = renderer_;
         if (!audio_->start(std::move(ac), std::move(paused_audio_))) {
             LOG_WARN << "SETUP stream 96: AudioReceiver failed to start "

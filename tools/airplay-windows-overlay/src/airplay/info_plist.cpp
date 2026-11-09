@@ -156,13 +156,18 @@ std::vector<unsigned char> build_info_plist(const DeviceContext& ctx) {
 
     plist_t latencies = plist_new_array();
     plist_array_append_item(latencies, make_audio_latency(100));
+    plist_array_append_item(latencies, make_audio_latency(101));
     plist_dict_set_item(root, "audioLatencies", latencies);
 
     // 现代 AirPlay 2 发送端会根据该字典选择 realtime 或 buffered 编码。
     // 只声明解码器实际支持的立体声格式，避免发送 AAC 5.1/7.1 或
     // 未配置的 24-bit ALAC 后产生噪声。
     plist_t supported = plist_new_dict();
-    set_uint(supported, "audioStream", 262144); // ALAC/44100/S16/stereo
+    // Advertise every realtime codec the receiver can decode. An ALAC-only
+    // value can make a modern iPhone omit the companion type-96 stream when
+    // starting a screen-mirroring session.
+    set_uint(supported, "audioStream", UINT64_C(0x1440800));
+    set_uint(supported, "screenStream", UINT64_C(0x1440800));
     set_uint(
         supported, "bufferStream",
         UINT64_C(0x400000) |   // AAC-LC/44100/F24/stereo

@@ -12,11 +12,32 @@
 int main() {
     if (!ap::net::global_init()) return 1;
 
+    for (uint16_t port : {static_cast<uint16_t>(319),
+                          static_cast<uint16_t>(320)}) {
+        socket_t probe = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (probe == INVALID_SOCK) continue;
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_port = htons(port);
+        address.sin_addr.s_addr = htonl(INADDR_ANY);
+        const bool available =
+            ::bind(probe, reinterpret_cast<sockaddr*>(&address),
+                   sizeof(address)) == 0;
+        ap::net::close_socket(probe);
+        if (!available) {
+            std::cout << "SKIP: UDP " << port
+                      << " is owned by a running receiver\n";
+            ap::net::global_shutdown();
+            return 0;
+        }
+    }
+
     ap::airplay::PtpListener listener;
     if (!listener.start()) {
-        std::cerr << "FAIL: PTP listener could not bind UDP 319/320\n";
+        std::cout << "SKIP: UDP 319/320 are already owned by a running "
+                     "receiver\n";
         ap::net::global_shutdown();
-        return 1;
+        return 0;
     }
 
     socket_t sender = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);

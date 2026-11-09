@@ -86,7 +86,10 @@ ap::airplay::DeviceContext build_device_context(bool hls_playback) {
     // 配对(46/47)和旧版配对(27)，让 AP1/AP2 发送端按能力自动选择。
     ctx.features = hls_playback ? "0x5A7FFEF7,0x1C340"
                                 : "0x5A7FFEE6,0x1C340";
-    ctx.srcvers  = "220.68";
+    // AirPlay 2 senders use sourceVersion to choose the timing/stream model.
+    // Values above 355 select PTP + buffered audio; 366 also enables the
+    // modern remote-control surface used by current iPhones.
+    ctx.srcvers  = "366.0";
     return ctx;
 }
 

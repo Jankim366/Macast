@@ -214,6 +214,7 @@ bool BufferedAudioReceiver::due_local_ns(
     uint64_t anchor_network_ns = 0;
     bool anchor_valid = false;
     bool playing = false;
+    bool fallback_active = false;
     const ap::airplay::PtpListener* ptp = nullptr;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
@@ -222,12 +223,13 @@ bool BufferedAudioReceiver::due_local_ns(
         anchor_network_ns = anchor_network_ns_;
         anchor_valid = anchor_valid_;
         playing = playing_;
+        fallback_active = fallback_clock_valid_;
         ptp = config_.ptp;
     }
     if (!playing) return false;
 
     uint64_t anchor_local_ns = 0;
-    if (anchor_valid && ptp &&
+    if (!fallback_active && anchor_valid && ptp &&
         ptp->master_to_local(
             anchor_network_ns, anchor_local_ns, timeline_id)) {
         const int64_t frames =
@@ -236,7 +238,12 @@ bool BufferedAudioReceiver::due_local_ns(
             frames * INT64_C(1'000'000'000) / config_.sample_rate;
         const int64_t target =
             static_cast<int64_t>(anchor_local_ns) + offset_ns;
-        if (target >= 0) {
+        const int64_t now = steady_now_ns();
+        // A valid-looking anchor can still be in a different epoch or several
+        // minutes ahead. For single-device playback, keep bounded startup
+        // latency instead of enqueueing the whole burst before first sound.
+        if (target >= now - 1'000'000'000LL &&
+            target <= now + 1'000'000'000LL) {
             due_ns = static_cast<uint64_t>(target);
             return true;
         }
@@ -328,8 +335,27 @@ void BufferedAudioReceiver::receive_loop() {
 
     std::vector<int16_t> pcm(8192);
     bool warned_no_ptp = false;
+    uint64_t packets = 0;
+    uint64_t decoded_frames = 0;
+    const std::size_t max_samples =
+        std::max<std::size_t>(
+            config_.audio_buffer_size / sizeof(int16_t),
+            static_cast<std::size_t>(config_.sample_rate) *
+                static_cast<std::size_t>(config_.channels) * 8);
     while (running_.load()) {
         drain_pending();
+
+        // Apply TCP backpressure instead of dropping the oldest decoded
+        // blocks. Senders intentionally pre-buffer ahead of playback; dropping
+        // that pre-buffer creates audible gaps and stuttering even though the
+        // connection remains healthy.
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            if (pending_samples_ >= max_samples) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
+        }
 
         fd_set readable;
         FD_ZERO(&readable);
@@ -358,6 +384,7 @@ void BufferedAudioReceiver::receive_loop() {
         // encrypted audio stream and carries no codec payload.
         if (ssrc == 0) continue;
         if (!configure_decoder(ssrc)) continue;
+        ++packets;
 
         if (!warned_no_ptp && config_.ptp && !config_.ptp->ready()) {
             LOG_WARN << "BufferedAudioReceiver: PTP clock not acquired; "
@@ -374,6 +401,7 @@ void BufferedAudioReceiver::receive_loop() {
                 payload.data(), static_cast<int>(payload.size())) < 0) {
             continue;
         }
+        ++decoded_frames;
 
         uint32_t next_timestamp = rtp_timestamp;
         while (true) {
@@ -393,20 +421,17 @@ void BufferedAudioReceiver::receive_loop() {
             }
         }
 
-        // 保留足够空间接收发送端的突发数据，同时避免异常流无限占用内存。
-        const std::size_t max_samples =
-            std::max<std::size_t>(
-                config_.audio_buffer_size / sizeof(int16_t),
-                static_cast<std::size_t>(config_.sample_rate) *
-                    static_cast<std::size_t>(config_.channels) * 8);
-        while (running_.load()) {
+        if (packets == 1 || packets % 500 == 0) {
+            std::size_t queued = 0;
             {
                 std::lock_guard<std::mutex> lock(state_mutex_);
-                if (pending_samples_ <= max_samples || pending_.empty()) break;
-                pending_samples_ -= pending_.front().samples.size();
-                pending_.pop_front();
+                queued = pending_samples_;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            LOG_INFO << "BufferedAudioReceiver: packets=" << packets
+                     << " decoded=" << decoded_frames
+                     << " queued_samples=" << queued
+                     << " ptp=" << (config_.ptp && config_.ptp->ready()
+                                        ? "yes" : "no");
         }
     }
 }

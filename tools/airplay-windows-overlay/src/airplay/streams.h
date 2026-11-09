@@ -79,6 +79,8 @@ public:
         uint32_t                   stream_id   = 0;
         uint32_t                   audio_buffer_size = 0;
         std::vector<unsigned char> stream_key;
+        std::vector<unsigned char> stream_iv;
+        std::vector<unsigned char> homekit_session_key;
         bool                       mirror_hwaccel = true;
     };
 
